@@ -104,9 +104,9 @@ gather_agent() {
   # Best-effort: read the most recent "dispatch:" line from the tick log.
   if [[ -r "$LOG" ]]; then
     local dispatch_line
-    dispatch_line=$(grep -E 'dispatch: kind=[a-z]+ target=#[0-9]+' "$LOG" 2>/dev/null | tail -1 || true)
+    dispatch_line=$(grep -E 'dispatch: kind=[a-z0-9]+ target=#[0-9]+' "$LOG" 2>/dev/null | tail -1 || true)
     if [[ -n "$dispatch_line" ]]; then
-      AGENT_ROLE=$(echo "$dispatch_line" | sed -nE 's/.*kind=([a-z]+).*/\1/p')
+      AGENT_ROLE=$(echo "$dispatch_line" | sed -nE 's/.*kind=([a-z0-9]+).*/\1/p')
       AGENT_TARGET=$(echo "$dispatch_line" | sed -nE 's/.*target=(#[0-9]+).*/\1/p')
     fi
   fi
