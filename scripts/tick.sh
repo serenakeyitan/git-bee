@@ -35,13 +35,13 @@ if [[ -f "$LOCK" ]]; then
 fi
 
 # Guard 2: find work
-# Priority order:
+# Priority order (PRs beat issues — if an issue already has a linked PR,
+# the PR is the next actionable step):
 #   1. approved PRs → e2e agent
-#   2. open PRs without reviewer's review at current HEAD → reviewer agent
-#   3. open issues without breeze:wip → drafter agent
+#   2. unreviewed open PRs → reviewer agent
+#   3. issues with NO linked open PR and no breeze:wip → drafter agent
 pick_target() {
   # Emits "<kind> <number>" to stdout, nothing if idle.
-  # kind ∈ {e2e, reviewer, drafter}
 
   # 1. approved PRs needing E2E
   local approved_prs
@@ -63,15 +63,24 @@ pick_target() {
     return
   fi
 
-  # 3. open issues without breeze:wip
-  local unclaimed_issues
-  unclaimed_issues=$(gh issue list --repo "$REPO" --state open --limit 50 \
+  # 3. issues with no linked OPEN PR and no breeze:wip
+  # We detect linkage by scanning open PR bodies for "Fixes #N" / "Closes #N".
+  local open_pr_bodies
+  open_pr_bodies=$(gh pr list --repo "$REPO" --state open --limit 50 \
+    --json body --jq '.[].body' 2>/dev/null || true)
+
+  local all_open_issues
+  all_open_issues=$(gh issue list --repo "$REPO" --state open --limit 50 \
     --json number,labels \
     --jq '.[] | select(.labels | map(.name) | index("breeze:wip") | not) | .number' 2>/dev/null || true)
-  if [[ -n "$unclaimed_issues" ]]; then
-    echo "drafter $(echo "$unclaimed_issues" | head -1)"
+
+  for n in $all_open_issues; do
+    if echo "$open_pr_bodies" | grep -qiE "(fixes|closes|resolves)[[:space:]]+#${n}\b"; then
+      continue
+    fi
+    echo "drafter $n"
     return
-  fi
+  done
 }
 
 target=$(pick_target)
