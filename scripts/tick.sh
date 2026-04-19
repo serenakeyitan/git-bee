@@ -93,33 +93,28 @@ pick_target() {
   local unreviewed_prs
   unreviewed_prs=$(echo "$pr_rows" | jq -r '
     .[]
-    | select(.labels | map(.name) | index("breeze:wip") | not)
-    | select([.reviews[]? | select(.commit.oid == .headRefOid or .commit == null)] | length == 0)
-    | .number
+    | . as $pr
+    | select($pr.labels | map(.name) | index("breeze:wip") | not)
+    | select([$pr.reviews[]? | select(.commit.oid == $pr.headRefOid)] | length == 0)
+    | $pr.number
   ' 2>/dev/null || true)
-  # Fallback: if no reviews array fields, fall back to reviewDecision-based
-  if [[ -z "$unreviewed_prs" ]]; then
-    unreviewed_prs=$(echo "$pr_rows" | jq -r '
-      .[]
-      | select(.labels | map(.name) | index("breeze:wip") | not)
-      | select(.reviewDecision == null or .reviewDecision == "" or .reviewDecision == "REVIEW_REQUIRED")
-      | select((.reviews // []) | length == 0)
-      | .number
-    ' 2>/dev/null || true)
-  fi
   if [[ -n "$unreviewed_prs" ]]; then
     echo "reviewer $(echo "$unreviewed_prs" | head -1)"
     return
   fi
 
-  # 2b. PRs with a review but not yet approved → back to drafter to address feedback.
+  # 2b. PRs with a review at HEAD but not approved + no e2e marker → drafter.
+  # Guard against re-dispatching drafter on a PR it just updated:
+  # only match if no approval marker is present AND a review at HEAD exists.
   local feedback_prs
   feedback_prs=$(echo "$pr_rows" | jq -r '
     .[]
-    | select(.labels | map(.name) | index("breeze:wip") | not)
-    | select(.reviewDecision != "APPROVED")
-    | select((.reviews // []) | length > 0)
-    | .number
+    | . as $pr
+    | select($pr.labels | map(.name) | index("breeze:wip") | not)
+    | select($pr.reviewDecision != "APPROVED")
+    | select(any($pr.reviews[]?.body // ""; contains("<!-- bee:approved-for-e2e -->")) | not)
+    | select([$pr.reviews[]? | select(.commit.oid == $pr.headRefOid)] | length > 0)
+    | $pr.number
   ' 2>/dev/null || true)
   if [[ -n "$feedback_prs" ]]; then
     echo "drafter $(echo "$feedback_prs" | head -1)"
