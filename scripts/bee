@@ -6,7 +6,23 @@
 
 set -euo pipefail
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Resolve the real path of this script, following symlinks. macOS lacks
+# `readlink -f` by default, so walk the links manually. Without this, invoking
+# bee through the symlink planted by install.sh would leave HERE pointing at
+# the link's directory and the subsequent `source` would fail.
+_bee_realpath() {
+  local target="$1" dir base
+  while [[ -L "$target" ]]; do
+    dir="$(cd "$(dirname "$target")" && pwd)"
+    target="$(readlink "$target")"
+    [[ "$target" != /* ]] && target="$dir/$target"
+  done
+  dir="$(cd "$(dirname "$target")" && pwd)"
+  base="$(basename "$target")"
+  printf '%s/%s\n' "$dir" "$base"
+}
+
+HERE="$(dirname "$(_bee_realpath "${BASH_SOURCE[0]}")")"
 # shellcheck disable=SC1091
 source "$HERE/claim.sh"
 
@@ -42,6 +58,7 @@ EOF
 
 _iso_to_epoch() {
   # GNU `date -d` and BSD `date -j -f` differ. Try BSD first, then GNU.
+  # On failure emits "0"; callers MUST treat 0 as "unknown", not 1970-01-01.
   local iso="$1"
   if date -j -u -f '%Y-%m-%dT%H:%M:%SZ' "$iso" +%s 2>/dev/null; then
     return
@@ -126,7 +143,9 @@ gather_launchd() {
   fi
   LAUNCHD_STATE="loaded"
 
-  # The plist uses StartInterval (every N seconds). Read it directly.
+  # The plist uses StartInterval (every N seconds). If the plist is ever
+  # switched to StartCalendarInterval we'd silently drop the next-tick
+  # estimate — fine, status still reports `loaded`.
   local plist="$HOME/Library/LaunchAgents/$PLIST_NAME"
   if [[ ! -r "$plist" ]]; then
     return
@@ -192,6 +211,9 @@ gather_github() {
   GH_HUMAN_ITEMS="$human_items"
 
   # Stale claims: walk every open item with breeze:wip and ask claim.sh.
+  # Each claim_check costs 2 `gh issue view` calls, so this loop is O(2N+2)
+  # API calls for N claimed items. Fine at current scale; if `bee status`
+  # ever gets called in a tight loop we should batch via a single GraphQL.
   local wip_issue_numbers wip_pr_numbers
   wip_issue_numbers=$(echo "$issues" | jq -r '.[] | select(.labels | map(.name) | index("breeze:wip")) | .number' 2>/dev/null || true)
   wip_pr_numbers=$(echo "$prs" | jq -r '.[] | select(.labels | map(.name) | index("breeze:wip")) | .number' 2>/dev/null || true)
@@ -258,15 +280,13 @@ render_text() {
   if [[ "$GH_FINALIZED" == "true" ]]; then
     gh_line="all clear — project finalized"
   else
-    local issue_part="${GH_ISSUES_OPEN} issue"; (( GH_ISSUES_OPEN == 1 )) || issue_part="${GH_ISSUES_OPEN} issues"
-    issue_part+=" open"
+    local issue_part pr_part stale_part
+    if (( GH_ISSUES_OPEN == 1 )); then issue_part="1 issue open"; else issue_part="${GH_ISSUES_OPEN} issues open"; fi
     if [[ -n "$GH_ISSUE_NUMBERS" ]]; then
       issue_part+=" (${GH_ISSUE_NUMBERS// /, })"
     fi
-    local pr_part="${GH_PRS_OPEN} PR"; (( GH_PRS_OPEN == 1 )) || pr_part="${GH_PRS_OPEN} PRs"
-    pr_part+=" open"
-    local stale_part="${GH_STALE_CLAIMS} stale claim"
-    (( GH_STALE_CLAIMS == 1 )) || stale_part="${GH_STALE_CLAIMS} stale claims"
+    if (( GH_PRS_OPEN == 1 )); then pr_part="1 PR open"; else pr_part="${GH_PRS_OPEN} PRs open"; fi
+    if (( GH_STALE_CLAIMS == 1 )); then stale_part="1 stale claim"; else stale_part="${GH_STALE_CLAIMS} stale claims"; fi
     gh_line="${issue_part}, ${pr_part}, ${stale_part}"
     if (( GH_HUMAN_ITEMS > 0 )); then
       gh_line+=", ${GH_HUMAN_ITEMS} breeze:human"
@@ -297,7 +317,7 @@ render_json() {
     --argjson prs_open "$GH_PRS_OPEN" \
     --argjson stale_claims "$GH_STALE_CLAIMS" \
     --argjson human_items "$GH_HUMAN_ITEMS" \
-    --argjson finalized "$([[ "$GH_FINALIZED" == "true" ]] && echo true || echo false)" \
+    --argjson finalized "$GH_FINALIZED" \
     --arg tick_log_path "$TICK_LOG_PATH" \
     --arg tick_log_last "$TICK_LOG_LAST" \
     '{
