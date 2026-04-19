@@ -18,10 +18,11 @@ Does: checks prereqs (gh, git, jq, claude), configures SSH signing on the repo, 
 
 1. If `/tmp/git-bee-agent.pid` exists and the PID is alive → exit (agent already running).
 2. Pick a target with this priority (oldest-first within each bucket):
-   1. Approved PRs → E2E agent. "Approved" means `reviewDecision=APPROVED` *or* a review body contains `<!-- bee:approved-for-e2e -->` (used for self-authored PRs that can't be approved through the normal UI).
-   2. Unreviewed open PRs (no review at current HEAD) → reviewer agent
-   3. PRs that have reviews but aren't approved → drafter agent (addresses feedback)
-   4. Open issues with no linked open PR and no `breeze:wip` → drafter agent
+   1. **Approved PR with passing E2E** → merger agent (merges, closes linked issues with `breeze:done`)
+   2. **Approved PR without E2E yet** → E2E agent (`APPROVED` or `<!-- bee:approved-for-e2e -->` marker in a review counts as approved)
+   3. **Unreviewed PR** (no review at current HEAD) → reviewer agent
+   4. **PR with non-approving review** → drafter agent (addresses feedback)
+   5. **Open issue with no linked open PR and no `breeze:wip`** → drafter agent
 3. If no target → exit quietly (project finalized).
 4. Acquire `breeze:wip` + post timestamped claim comment.
 5. Write PID lock, spawn `claude -p` with the matching role prompt.

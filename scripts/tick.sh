@@ -43,13 +43,30 @@ fi
 pick_target() {
   # Emits "<kind> <number>" to stdout, nothing if idle.
 
-  # 1. approved PRs needing E2E (oldest first).
-  # "Approved" = either reviewDecision == APPROVED, OR a review body contains
-  # the literal marker `<!-- bee:approved-for-e2e -->`. The marker path exists
-  # because self-authored PRs can't use GitHub's --approve.
   local pr_basics
   pr_basics=$(gh pr list --repo "$REPO" --state open --search "sort:created-asc" --limit 50 \
-    --json number,reviewDecision,labels,reviews 2>/dev/null || echo "[]")
+    --json number,reviewDecision,labels,reviews,comments 2>/dev/null || echo "[]")
+
+  # 1. Approved PRs that also have a passing E2E trace → merger.
+  # "Approved" = reviewDecision == APPROVED OR a review body contains the marker.
+  # "E2E pass" = any PR issue-comment contains "**E2E trace (pass)**".
+  local mergeable_prs
+  mergeable_prs=$(echo "$pr_basics" | jq -r '
+    .[]
+    | select(.labels | map(.name) | index("breeze:wip") | not)
+    | select(
+        .reviewDecision == "APPROVED"
+        or any(.reviews[]?.body // ""; contains("<!-- bee:approved-for-e2e -->"))
+      )
+    | select(any(.comments[]?.body // ""; contains("**E2E trace (pass)**")))
+    | .number
+  ' 2>/dev/null || true)
+  if [[ -n "$mergeable_prs" ]]; then
+    echo "merger $(echo "$mergeable_prs" | head -1)"
+    return
+  fi
+
+  # 1b. Approved PRs without an E2E trace yet → E2E.
   local approved_prs
   approved_prs=$(echo "$pr_basics" | jq -r '
     .[]
@@ -58,6 +75,7 @@ pick_target() {
         .reviewDecision == "APPROVED"
         or any(.reviews[]?.body // ""; contains("<!-- bee:approved-for-e2e -->"))
       )
+    | select(any(.comments[]?.body // ""; contains("**E2E trace")) | not)
     | .number
   ' 2>/dev/null || true)
   if [[ -n "$approved_prs" ]]; then
