@@ -28,12 +28,22 @@ step "verifying SSH signing key"
 if [[ ! -f "$HOME/.ssh/id_ed25519.pub" ]]; then
   fail "no SSH key at ~/.ssh/id_ed25519.pub — generate one: ssh-keygen -t ed25519"
 fi
-# Make sure the repo itself has signing enabled
 (cd "$REPO_ROOT" && git config --local gpg.format ssh && \
   git config --local user.signingkey "$HOME/.ssh/id_ed25519.pub" && \
   git config --local commit.gpgsign true && \
   git config --local tag.gpgsign true)
 ok "ssh signing enabled for $(basename "$REPO_ROOT")"
+
+# 2b. Warn if the key isn't registered with GitHub as a signing key
+pubkey_oneline=$(awk '{print $1" "$2}' "$HOME/.ssh/id_ed25519.pub")
+registered=$(gh api /user/ssh_signing_keys --jq '.[].key' 2>/dev/null | awk '{print $1" "$2}' || echo "")
+if echo "$registered" | grep -qF "$pubkey_oneline"; then
+  ok "ssh key registered as a GitHub signing key — commits will be Verified"
+else
+  warn "ssh key NOT registered as a GitHub signing key — commits will show 'Unverified'"
+  warn "  register at: https://github.com/settings/ssh/new (select 'Signing Key')"
+  warn "  or via API:  gh api /user/ssh_signing_keys -f key=\"\$(cat ~/.ssh/id_ed25519.pub)\" -f title=git-bee"
+fi
 
 # 3. Labels
 step "ensuring breeze:* labels on $REPO"
@@ -61,13 +71,7 @@ if [[ ! -f "$PLIST_SRC" ]]; then
 fi
 
 # Rewrite the plist to point at the real repo path (not ~/git-bee if user cloned elsewhere)
-python3 - "$PLIST_SRC" "$REPO_ROOT" > "$PLIST_DST" <<'PY'
-import sys, pathlib
-src, repo_root = sys.argv[1], sys.argv[2]
-content = pathlib.Path(src).read_text()
-content = content.replace("cd ~/git-bee", f"cd {repo_root}")
-sys.stdout.write(content)
-PY
+sed "s|cd ~/git-bee|cd ${REPO_ROOT}|" "$PLIST_SRC" > "$PLIST_DST"
 
 # Unload if loaded, then load
 launchctl unload "$PLIST_DST" 2>/dev/null || true

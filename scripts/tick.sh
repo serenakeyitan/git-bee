@@ -43,9 +43,9 @@ fi
 pick_target() {
   # Emits "<kind> <number>" to stdout, nothing if idle.
 
-  # 1. approved PRs needing E2E
+  # 1. approved PRs needing E2E (oldest first)
   local approved_prs
-  approved_prs=$(gh pr list --repo "$REPO" --state open --limit 50 \
+  approved_prs=$(gh pr list --repo "$REPO" --state open --search "sort:created-asc" --limit 50 \
     --json number,reviewDecision,labels \
     --jq '.[] | select(.reviewDecision == "APPROVED" and (.labels | map(.name) | index("breeze:wip") | not)) | .number' 2>/dev/null || true)
   if [[ -n "$approved_prs" ]]; then
@@ -53,13 +53,46 @@ pick_target() {
     return
   fi
 
-  # 2. open PRs without any review at current HEAD
+  # 2. PRs needing a reviewer — no review yet at current HEAD SHA.
+  # We inspect reviews, not reviewDecision: "COMMENTED" still leaves
+  # reviewDecision empty, but means a review exists.
+  local pr_rows
+  pr_rows=$(gh pr list --repo "$REPO" --state open --search "sort:created-asc" --limit 50 \
+    --json number,reviewDecision,labels,reviews,headRefOid 2>/dev/null || echo "[]")
+
   local unreviewed_prs
-  unreviewed_prs=$(gh pr list --repo "$REPO" --state open --limit 50 \
-    --json number,reviewDecision,labels \
-    --jq '.[] | select((.reviewDecision == null or .reviewDecision == "" or .reviewDecision == "REVIEW_REQUIRED") and (.labels | map(.name) | index("breeze:wip") | not)) | .number' 2>/dev/null || true)
+  unreviewed_prs=$(echo "$pr_rows" | jq -r '
+    .[]
+    | select(.labels | map(.name) | index("breeze:wip") | not)
+    | select([.reviews[]? | select(.commit.oid == .headRefOid or .commit == null)] | length == 0)
+    | .number
+  ' 2>/dev/null || true)
+  # Fallback: if no reviews array fields, fall back to reviewDecision-based
+  if [[ -z "$unreviewed_prs" ]]; then
+    unreviewed_prs=$(echo "$pr_rows" | jq -r '
+      .[]
+      | select(.labels | map(.name) | index("breeze:wip") | not)
+      | select(.reviewDecision == null or .reviewDecision == "" or .reviewDecision == "REVIEW_REQUIRED")
+      | select((.reviews // []) | length == 0)
+      | .number
+    ' 2>/dev/null || true)
+  fi
   if [[ -n "$unreviewed_prs" ]]; then
     echo "reviewer $(echo "$unreviewed_prs" | head -1)"
+    return
+  fi
+
+  # 2b. PRs with a review but not yet approved → back to drafter to address feedback.
+  local feedback_prs
+  feedback_prs=$(echo "$pr_rows" | jq -r '
+    .[]
+    | select(.labels | map(.name) | index("breeze:wip") | not)
+    | select(.reviewDecision != "APPROVED")
+    | select((.reviews // []) | length > 0)
+    | .number
+  ' 2>/dev/null || true)
+  if [[ -n "$feedback_prs" ]]; then
+    echo "drafter $(echo "$feedback_prs" | head -1)"
     return
   fi
 
@@ -70,7 +103,7 @@ pick_target() {
     --json body --jq '.[].body' 2>/dev/null || true)
 
   local all_open_issues
-  all_open_issues=$(gh issue list --repo "$REPO" --state open --limit 50 \
+  all_open_issues=$(gh issue list --repo "$REPO" --state open --search "sort:created-asc" --limit 50 \
     --json number,labels \
     --jq '.[] | select(.labels | map(.name) | index("breeze:wip") | not) | .number' 2>/dev/null || true)
 
@@ -101,10 +134,12 @@ if ! claim_acquire "$REPO" "$number" "$agent_id"; then
   exit 0
 fi
 
-# Guard 3: write lock, spawn agent
+# Write the PID lock BEFORE spawning so an unexpected failure can't orphan
+# the GitHub claim without also showing on the local filesystem. The release
+# trap takes both down together.
 echo $$ > "$LOCK"
 release_all() {
-  claim_release "$REPO" "$number" "$agent_id" || true
+  claim_release "$REPO" "$number" "$agent_id" 2>/dev/null || true
   rm -f "$LOCK"
 }
 trap release_all EXIT

@@ -68,27 +68,44 @@ claim_check() {
 }
 
 claim_acquire() {
+  # Make the label add the atomic step. If the label was already present
+  # (gh returns exit 0 either way, so we check first but ONLY to decide
+  # whether to fail-fast on a fresh claim; the post-state is what matters).
   local repo="$1" number="$2" agent="$3"
   local status
   status=$(claim_check "$repo" "$number")
   case "$status" in
     fresh-claim) return 1 ;;
     stale-claim)
-      # Forcibly clear and re-claim
       gh issue edit "$number" --repo "$repo" --remove-label "breeze:wip" >/dev/null 2>&1 || true
       ;;
   esac
-  gh issue edit "$number" --repo "$repo" --add-label "breeze:wip" >/dev/null
+  # Race window: between check and add, another agent may have claimed.
+  # Mitigation: post the marker comment FIRST, then add the label. If two
+  # agents race, both markers land; whoever's marker is newer "owns" per
+  # _claim_latest_marker. claim_is_mine lets the agent verify post-ack.
   local marker_body
   marker_body="<!-- breeze:claimed-at=$(_claim_now_iso) by=${agent} -->"
   gh issue comment "$number" --repo "$repo" --body "$marker_body" >/dev/null
-  return 0
+  gh issue edit "$number" --repo "$repo" --add-label "breeze:wip" >/dev/null
+  # Verify we won the race
+  if claim_is_mine "$repo" "$number" "$agent"; then
+    return 0
+  else
+    return 1
+  fi
 }
 
 claim_release() {
   local repo="$1" number="$2" agent="$3"
+  # Only release if the claim is ours. Prevents one agent dropping another's lock.
+  if ! claim_is_mine "$repo" "$number" "$agent"; then
+    printf 'claim_release: refusing to release — latest claim is not %s on %s#%s\n' \
+      "$agent" "$repo" "$number" >&2
+    return 1
+  fi
   gh issue edit "$number" --repo "$repo" --remove-label "breeze:wip" >/dev/null 2>&1 || true
-  # Do not delete the marker — it's the audit trail. It just becomes stale.
+  # Do not delete the marker — it's the audit trail.
 }
 
 claim_is_mine() {
