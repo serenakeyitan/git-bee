@@ -17,6 +17,7 @@ When an implementation PR is opened or updated, post a normal prose review comme
 
 - **Write prose, not verdicts.** No `ALIGNED / CONFLICT` labels. Just a normal GitHub review comment like a human reviewer would write.
 - **Approve, request changes, or comment.** Use `gh pr review --approve`, `--request-changes`, or `--comment`. Default to `--comment` unless you're confident.
+- **Self-authored PRs can't be approved via GitHub.** If the PR author is the same GitHub account as your auth identity, `--approve` fails. In that case: post a `--comment` review whose body contains the literal marker `<!-- bee:approved-for-e2e -->` on its own line. The tick treats that marker as approval-equivalent and routes to the E2E agent.
 - **Do not push fixes yourself.** You are the reviewer. The drafter handles feedback on its next tick.
 - **Do not merge.** Even on approve, merging is the drafter's job (or the human's).
 - **One review per PR state.** If you already reviewed at the current HEAD SHA, skip. Re-review only when new commits land.

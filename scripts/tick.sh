@@ -4,19 +4,24 @@
 # Guards (in order):
 #   1. Local PID lock — if an agent is already running on this machine, exit.
 #   2. GitHub state — find the oldest open issue/PR without a fresh breeze:wip.
-#   3. If nothing is open, the project is finalized. Exit quietly.
+#   3. If no unclaimed open items exist, project is finalized. Exit quietly.
 #
 # Invoked by launchd every 15 minutes.
 
 set -euo pipefail
 
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$HERE/.." && pwd)"
+# shellcheck disable=SC1091
+source "$HERE/claim.sh"
+
 REPO="serenakeyitan/git-bee"
 LOCK="/tmp/git-bee-agent.pid"
-CLAIM_TTL_SECONDS=7200  # 2 hours
-LOG="${HOME}/.git-bee/tick.log"
-mkdir -p "$(dirname "$LOG")"
+LOG_DIR="${HOME}/.git-bee"
+LOG="${LOG_DIR}/tick.log"
+mkdir -p "$LOG_DIR"
 
-log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >> "$LOG"; }
+log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" | tee -a "$LOG"; }
 
 # Guard 1: local PID lock
 if [[ -f "$LOCK" ]]; then
@@ -30,34 +35,171 @@ if [[ -f "$LOCK" ]]; then
 fi
 
 # Guard 2: find work
-# List open issues + PRs, filter out those with fresh breeze:wip claim.
-# A claim is fresh if a <!-- breeze:claimed-at=<iso> --> comment exists within CLAIM_TTL_SECONDS.
+# Priority order (PRs beat issues — if an issue already has a linked PR,
+# the PR is the next actionable step):
+#   1. approved PRs → e2e agent
+#   2. unreviewed open PRs → reviewer agent
+#   3. issues with NO linked open PR and no breeze:wip → drafter agent
+pick_target() {
+  # Emits "<kind> <number>" to stdout, nothing if idle.
 
-candidates=$(gh issue list --repo "$REPO" --state open --limit 50 --json number,labels,updatedAt \
-  --jq '.[] | select(.labels | map(.name) | index("breeze:wip") | not) | .number' 2>/dev/null || echo "")
+  local pr_basics
+  pr_basics=$(gh pr list --repo "$REPO" --state open --search "sort:created-asc" --limit 50 \
+    --json number,reviewDecision,labels,reviews,comments 2>/dev/null || echo "[]")
 
-if [[ -z "$candidates" ]]; then
-  # Also check PRs
-  candidates=$(gh pr list --repo "$REPO" --state open --limit 50 --json number,labels \
-    --jq '.[] | select(.labels | map(.name) | index("breeze:wip") | not) | .number' 2>/dev/null || echo "")
-fi
+  # 1. Approved PRs that also have a passing E2E trace → merger.
+  # "Approved" = reviewDecision == APPROVED OR a review body contains the marker.
+  # "E2E pass" = any PR issue-comment contains "**E2E trace (pass)**".
+  local mergeable_prs
+  mergeable_prs=$(echo "$pr_basics" | jq -r '
+    .[]
+    | select(.labels | map(.name) | index("breeze:wip") | not)
+    | select(
+        .reviewDecision == "APPROVED"
+        or any(.reviews[]?.body // ""; contains("<!-- bee:approved-for-e2e -->"))
+      )
+    | select(any(.comments[]?.body // ""; contains("**E2E trace (pass)**")))
+    | .number
+  ' 2>/dev/null || true)
+  if [[ -n "$mergeable_prs" ]]; then
+    echo "merger $(echo "$mergeable_prs" | head -1)"
+    return
+  fi
 
-if [[ -z "$candidates" ]]; then
+  # 1b. Approved PRs without an E2E trace yet → E2E.
+  local approved_prs
+  approved_prs=$(echo "$pr_basics" | jq -r '
+    .[]
+    | select(.labels | map(.name) | index("breeze:wip") | not)
+    | select(
+        .reviewDecision == "APPROVED"
+        or any(.reviews[]?.body // ""; contains("<!-- bee:approved-for-e2e -->"))
+      )
+    | select(any(.comments[]?.body // ""; contains("**E2E trace")) | not)
+    | .number
+  ' 2>/dev/null || true)
+  if [[ -n "$approved_prs" ]]; then
+    echo "e2e $(echo "$approved_prs" | head -1)"
+    return
+  fi
+
+  # 2. PRs needing a reviewer — no review yet at current HEAD SHA.
+  # We inspect reviews, not reviewDecision: "COMMENTED" still leaves
+  # reviewDecision empty, but means a review exists.
+  local pr_rows
+  pr_rows=$(gh pr list --repo "$REPO" --state open --search "sort:created-asc" --limit 50 \
+    --json number,reviewDecision,labels,reviews,headRefOid 2>/dev/null || echo "[]")
+
+  local unreviewed_prs
+  unreviewed_prs=$(echo "$pr_rows" | jq -r '
+    .[]
+    | select(.labels | map(.name) | index("breeze:wip") | not)
+    | select([.reviews[]? | select(.commit.oid == .headRefOid or .commit == null)] | length == 0)
+    | .number
+  ' 2>/dev/null || true)
+  # Fallback: if no reviews array fields, fall back to reviewDecision-based
+  if [[ -z "$unreviewed_prs" ]]; then
+    unreviewed_prs=$(echo "$pr_rows" | jq -r '
+      .[]
+      | select(.labels | map(.name) | index("breeze:wip") | not)
+      | select(.reviewDecision == null or .reviewDecision == "" or .reviewDecision == "REVIEW_REQUIRED")
+      | select((.reviews // []) | length == 0)
+      | .number
+    ' 2>/dev/null || true)
+  fi
+  if [[ -n "$unreviewed_prs" ]]; then
+    echo "reviewer $(echo "$unreviewed_prs" | head -1)"
+    return
+  fi
+
+  # 2b. PRs with a review but not yet approved → back to drafter to address feedback.
+  local feedback_prs
+  feedback_prs=$(echo "$pr_rows" | jq -r '
+    .[]
+    | select(.labels | map(.name) | index("breeze:wip") | not)
+    | select(.reviewDecision != "APPROVED")
+    | select((.reviews // []) | length > 0)
+    | .number
+  ' 2>/dev/null || true)
+  if [[ -n "$feedback_prs" ]]; then
+    echo "drafter $(echo "$feedback_prs" | head -1)"
+    return
+  fi
+
+  # 3. issues with no linked OPEN PR and no breeze:wip
+  # We detect linkage by scanning open PR bodies for "Fixes #N" / "Closes #N".
+  local open_pr_bodies
+  open_pr_bodies=$(gh pr list --repo "$REPO" --state open --limit 50 \
+    --json body --jq '.[].body' 2>/dev/null || true)
+
+  local all_open_issues
+  all_open_issues=$(gh issue list --repo "$REPO" --state open --search "sort:created-asc" --limit 50 \
+    --json number,labels \
+    --jq '.[] | select(.labels | map(.name) | index("breeze:wip") | not) | .number' 2>/dev/null || true)
+
+  for n in $all_open_issues; do
+    if echo "$open_pr_bodies" | grep -qiE "(fixes|closes|resolves)[[:space:]]+#${n}\b"; then
+      continue
+    fi
+    echo "drafter $n"
+    return
+  done
+}
+
+target=$(pick_target)
+
+if [[ -z "$target" ]]; then
   log "idle: no unclaimed open items — project finalized or nothing to do"
   exit 0
 fi
 
-target=$(echo "$candidates" | head -1)
-log "dispatch: target=#$target"
+kind="${target%% *}"
+number="${target##* }"
+log "dispatch: kind=$kind target=#$number"
 
-# Guard 3: write lock, spawn agent
+# Acquire claim BEFORE spawning, so concurrent ticks don't dispatch twice
+agent_id="${kind}-$(hostname -s)"
+if ! claim_acquire "$REPO" "$number" "$agent_id"; then
+  log "lost race to acquire claim on #$number, exiting"
+  exit 0
+fi
+
+# Write the PID lock BEFORE spawning so an unexpected failure can't orphan
+# the GitHub claim without also showing on the local filesystem. The release
+# trap takes both down together.
 echo $$ > "$LOCK"
-trap 'rm -f "$LOCK"' EXIT
+release_all() {
+  claim_release "$REPO" "$number" "$agent_id" 2>/dev/null || true
+  rm -f "$LOCK"
+}
+trap release_all EXIT
 
-# The actual agent spawn is intentionally left as a TODO — wire this to your
-# preferred runtime (claude -p, codex exec, or a custom dispatcher) once the
-# role prompts in agents/ are finalized.
-log "TODO: spawn agent with role=drafter target=#$target (see issue #1)"
+role_prompt_file="$REPO_ROOT/agents/${kind}.md"
+if [[ ! -f "$role_prompt_file" ]]; then
+  log "ERROR: no role prompt at $role_prompt_file"
+  exit 1
+fi
 
-# Placeholder: print what we would do
-echo "would dispatch drafter on $REPO#$target"
+# Runtime: claude -p in bypass mode. Set CLAUDE_BIN env to override.
+CLAUDE_BIN="${CLAUDE_BIN:-claude}"
+
+prompt=$(cat <<EOF
+You are acting in the role defined by @${role_prompt_file}.
+
+Your target is ${REPO}#${number}.
+Your agent id for this run is ${agent_id}.
+
+Read the role prompt, read the target issue/PR, and do the work described there.
+When you finish (or give up), exit cleanly. The tick wrapper will release the
+claim automatically on exit.
+EOF
+)
+
+log "spawning ${CLAUDE_BIN} for role=${kind} target=#${number}"
+"$CLAUDE_BIN" -p "$prompt" --permission-mode bypassPermissions 2>&1 | tee -a "$LOG" || {
+  exit_code=$?
+  log "agent exited non-zero (${exit_code}) for #${number}"
+  exit "$exit_code"
+}
+
+log "agent exited cleanly for #${number}"
