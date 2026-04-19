@@ -2,7 +2,7 @@
 
 *(call it **bee**)*
 
-A private agent that buzzes through GitHub issues on a schedule, picks up unfinished work, and ships it while you're not watching.
+Anagent that buzzes through GitHub issues on a schedule, picks up unfinished work, and ships it while you're not watching.
 
 ## How it works
 
