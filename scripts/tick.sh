@@ -57,7 +57,7 @@ pick_target() {
   local unreviewed_prs
   unreviewed_prs=$(gh pr list --repo "$REPO" --state open --limit 50 \
     --json number,reviewDecision,labels \
-    --jq '.[] | select((.reviewDecision == null or .reviewDecision == "REVIEW_REQUIRED") and (.labels | map(.name) | index("breeze:wip") | not)) | .number' 2>/dev/null || true)
+    --jq '.[] | select((.reviewDecision == null or .reviewDecision == "" or .reviewDecision == "REVIEW_REQUIRED") and (.labels | map(.name) | index("breeze:wip") | not)) | .number' 2>/dev/null || true)
   if [[ -n "$unreviewed_prs" ]]; then
     echo "reviewer $(echo "$unreviewed_prs" | head -1)"
     return
