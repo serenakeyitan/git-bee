@@ -54,6 +54,7 @@ pick_target() {
   mergeable_prs=$(echo "$pr_basics" | jq -r '
     .[]
     | select(.labels | map(.name) | index("breeze:wip") | not)
+    | select(.labels | map(.name) | index("breeze:human") | not)
     | select(
         .reviewDecision == "APPROVED"
         or any(.reviews[]?.body // ""; contains("<!-- bee:approved-for-e2e -->"))
@@ -71,6 +72,7 @@ pick_target() {
   approved_prs=$(echo "$pr_basics" | jq -r '
     .[]
     | select(.labels | map(.name) | index("breeze:wip") | not)
+    | select(.labels | map(.name) | index("breeze:human") | not)
     | select(
         .reviewDecision == "APPROVED"
         or any(.reviews[]?.body // ""; contains("<!-- bee:approved-for-e2e -->"))
@@ -95,6 +97,7 @@ pick_target() {
     .[]
     | . as $pr
     | select($pr.labels | map(.name) | index("breeze:wip") | not)
+    | select($pr.labels | map(.name) | index("breeze:human") | not)
     | select([$pr.reviews[]? | select(.commit.oid == $pr.headRefOid)] | length == 0)
     | $pr.number
   ' 2>/dev/null || true)
@@ -111,6 +114,7 @@ pick_target() {
     .[]
     | . as $pr
     | select($pr.labels | map(.name) | index("breeze:wip") | not)
+    | select($pr.labels | map(.name) | index("breeze:human") | not)
     | select($pr.reviewDecision != "APPROVED")
     | select(any($pr.reviews[]?.body // ""; contains("<!-- bee:approved-for-e2e -->")) | not)
     | select([$pr.reviews[]? | select(.commit.oid == $pr.headRefOid)] | length > 0)
@@ -130,7 +134,7 @@ pick_target() {
   local all_open_issues
   all_open_issues=$(gh issue list --repo "$REPO" --state open --search "sort:created-asc" --limit 50 \
     --json number,labels \
-    --jq '.[] | select(.labels | map(.name) | index("breeze:wip") | not) | .number' 2>/dev/null || true)
+    --jq '.[] | select(.labels | map(.name) | index("breeze:wip") | not) | select(.labels | map(.name) | index("breeze:human") | not) | .number' 2>/dev/null || true)
 
   for n in $all_open_issues; do
     if echo "$open_pr_bodies" | grep -qiE "(fixes|closes|resolves)[[:space:]]+#${n}\b"; then
