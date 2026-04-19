@@ -1,0 +1,385 @@
+#!/usr/bin/env bash
+# bee — git-bee status CLI.
+#
+# Read-only introspection of the local tick state and the project's GitHub
+# state. Never mutates. See `bee help` for usage.
+
+set -euo pipefail
+
+# Resolve the real path of this script, following symlinks. macOS lacks
+# `readlink -f` by default, so walk the links manually. Without this, invoking
+# bee through the symlink planted by install.sh would leave HERE pointing at
+# the link's directory and the subsequent `source` would fail.
+_bee_realpath() {
+  local target="$1" dir base
+  while [[ -L "$target" ]]; do
+    dir="$(cd "$(dirname "$target")" && pwd)"
+    target="$(readlink "$target")"
+    [[ "$target" != /* ]] && target="$dir/$target"
+  done
+  dir="$(cd "$(dirname "$target")" && pwd)"
+  base="$(basename "$target")"
+  printf '%s/%s\n' "$dir" "$base"
+}
+
+HERE="$(dirname "$(_bee_realpath "${BASH_SOURCE[0]}")")"
+# shellcheck disable=SC1091
+source "$HERE/claim.sh"
+
+REPO="${GIT_BEE_REPO:-serenakeyitan/git-bee}"
+LOCK="${GIT_BEE_LOCK:-/tmp/git-bee-agent.pid}"
+LOG_DIR="${GIT_BEE_LOG_DIR:-${HOME}/.git-bee}"
+LOG="${LOG_DIR}/tick.log"
+PLIST_NAME="com.serenakeyitan.git-bee.plist"
+
+usage() {
+  cat <<EOF
+bee — git-bee status at a glance
+
+Usage:
+  bee                    Show help (this text)
+  bee help               Show help (this text)
+  bee status             Print a terse three-section status block
+  bee status --json      Same data, JSON-encoded
+
+Exit codes:
+  0  agent idle or running cleanly
+  1  project has breeze:human items that need attention
+  2  usage error
+
+Environment:
+  GIT_BEE_REPO       override the target repo (default: serenakeyitan/git-bee)
+  GIT_BEE_LOCK       override PID lock path  (default: /tmp/git-bee-agent.pid)
+  GIT_BEE_LOG_DIR    override log directory  (default: ~/.git-bee)
+EOF
+}
+
+# ---- helpers ---------------------------------------------------------------
+
+_iso_to_epoch() {
+  # GNU `date -d` and BSD `date -j -f` differ. Try BSD first, then GNU.
+  # On failure emits "0"; callers MUST treat 0 as "unknown", not 1970-01-01.
+  local iso="$1"
+  if date -j -u -f '%Y-%m-%dT%H:%M:%SZ' "$iso" +%s 2>/dev/null; then
+    return
+  fi
+  date -u -d "$iso" +%s 2>/dev/null || echo 0
+}
+
+_fmt_duration() {
+  # Seconds → HH:MM:SS
+  local s="$1"
+  if ! [[ "$s" =~ ^-?[0-9]+$ ]]; then echo "?"; return; fi
+  if (( s < 0 )); then s=0; fi
+  printf '%02d:%02d:%02d' $((s/3600)) $(((s%3600)/60)) $((s%60))
+}
+
+# ---- gather agent state ----------------------------------------------------
+# Emits four globals:
+#   AGENT_STATE       = idle | running
+#   AGENT_PID         = <pid> when running, else empty
+#   AGENT_ROLE        = drafter | reviewer | e2e | merger | "" if unknown
+#   AGENT_TARGET      = "#N" or ""
+#   AGENT_CLAIMED_AGO = seconds since claim, or -1 if unknown
+
+gather_agent() {
+  AGENT_STATE=idle
+  AGENT_PID=""
+  AGENT_ROLE=""
+  AGENT_TARGET=""
+  AGENT_CLAIMED_AGO=-1
+
+  if [[ ! -f "$LOCK" ]]; then
+    return
+  fi
+  local pid
+  pid=$(cat "$LOCK" 2>/dev/null || echo "")
+  if [[ -z "$pid" ]] || ! kill -0 "$pid" 2>/dev/null; then
+    # Stale lock — tick treats it as idle and will clean up next pass.
+    return
+  fi
+  AGENT_STATE=running
+  AGENT_PID="$pid"
+
+  # Best-effort: read the most recent "dispatch:" line from the tick log.
+  if [[ -r "$LOG" ]]; then
+    local dispatch_line
+    dispatch_line=$(grep -E 'dispatch: kind=[a-z0-9]+ target=#[0-9]+' "$LOG" 2>/dev/null | tail -1 || true)
+    if [[ -n "$dispatch_line" ]]; then
+      AGENT_ROLE=$(echo "$dispatch_line" | sed -nE 's/.*kind=([a-z0-9]+).*/\1/p')
+      AGENT_TARGET=$(echo "$dispatch_line" | sed -nE 's/.*target=(#[0-9]+).*/\1/p')
+    fi
+  fi
+
+  # Best-effort: claim age from the latest marker on AGENT_TARGET.
+  if [[ -n "$AGENT_TARGET" ]]; then
+    local n="${AGENT_TARGET#\#}"
+    local marker claimed_at
+    marker=$(_claim_latest_marker "$REPO" "$n" 2>/dev/null || true)
+    if [[ -n "$marker" ]]; then
+      claimed_at=$(echo "$marker" | awk '{print $1}')
+      local then_s now_s
+      then_s=$(_iso_to_epoch "$claimed_at")
+      now_s=$(date -u +%s)
+      if [[ "$then_s" != 0 ]]; then
+        AGENT_CLAIMED_AGO=$((now_s - then_s))
+      fi
+    fi
+  fi
+}
+
+# ---- gather launchd state --------------------------------------------------
+# Emits:
+#   LAUNCHD_STATE          = loaded | not-installed
+#   LAUNCHD_NEXT_TICK_SECS = seconds until next fire, or -1 if unknown
+
+gather_launchd() {
+  LAUNCHD_STATE="not-installed"
+  LAUNCHD_NEXT_TICK_SECS=-1
+
+  local label="${PLIST_NAME%.plist}"
+  if ! launchctl list 2>/dev/null | awk '{print $3}' | grep -qx "$label"; then
+    return
+  fi
+  LAUNCHD_STATE="loaded"
+
+  # The plist uses StartInterval (every N seconds). If the plist is ever
+  # switched to StartCalendarInterval we'd silently drop the next-tick
+  # estimate — fine, status still reports `loaded`.
+  local plist="$HOME/Library/LaunchAgents/$PLIST_NAME"
+  if [[ ! -r "$plist" ]]; then
+    return
+  fi
+  local interval
+  interval=$(/usr/libexec/PlistBuddy -c 'Print :StartInterval' "$plist" 2>/dev/null || echo "")
+  if ! [[ "$interval" =~ ^[0-9]+$ ]] || (( interval <= 0 )); then
+    return
+  fi
+
+  # Approximate "next tick" from the last tick log entry's timestamp.
+  if [[ ! -r "$LOG" ]]; then
+    return
+  fi
+  local last_iso last_s now_s next_s
+  last_iso=$(grep -oE '^[0-9T:Z\-]+' "$LOG" 2>/dev/null | tail -1 || true)
+  if [[ -z "$last_iso" ]]; then
+    return
+  fi
+  last_s=$(_iso_to_epoch "$last_iso")
+  now_s=$(date -u +%s)
+  if [[ "$last_s" == 0 ]]; then
+    return
+  fi
+  next_s=$((last_s + interval - now_s))
+  if (( next_s < 0 )); then next_s=0; fi
+  LAUNCHD_NEXT_TICK_SECS="$next_s"
+}
+
+# ---- gather github state ---------------------------------------------------
+# Emits:
+#   GH_ISSUES_OPEN   = count
+#   GH_ISSUE_NUMBERS = "#N #M" of open issues (space-joined)
+#   GH_PRS_OPEN      = count
+#   GH_STALE_CLAIMS  = count of open items whose claim is stale (breeze:wip with marker older than TTL, or breeze:wip with no marker)
+#   GH_HUMAN_ITEMS   = count of open items with breeze:human
+#   GH_FINALIZED     = "true" | "false"
+
+gather_github() {
+  GH_ISSUES_OPEN=0
+  GH_ISSUE_NUMBERS=""
+  GH_PRS_OPEN=0
+  GH_STALE_CLAIMS=0
+  GH_HUMAN_ITEMS=0
+  GH_FINALIZED=false
+
+  local issues prs
+  issues=$(gh issue list --repo "$REPO" --state open --limit 100 \
+    --json number,labels 2>/dev/null || echo "[]")
+  prs=$(gh pr list --repo "$REPO" --state open --limit 100 \
+    --json number,labels 2>/dev/null || echo "[]")
+
+  GH_ISSUES_OPEN=$(echo "$issues" | jq 'length' 2>/dev/null || echo 0)
+  GH_PRS_OPEN=$(echo "$prs" | jq 'length' 2>/dev/null || echo 0)
+  GH_ISSUE_NUMBERS=$(echo "$issues" | jq -r '.[] | "#\(.number)"' 2>/dev/null | tr '\n' ' ' | sed 's/ $//')
+
+  local human_items
+  human_items=$(jq -sr '
+    [ .[0][], .[1][] ]
+    | map(select(.labels | map(.name) | index("breeze:human")))
+    | length
+  ' <(echo "$issues") <(echo "$prs") 2>/dev/null || echo 0)
+  GH_HUMAN_ITEMS="$human_items"
+
+  # Stale claims: walk every open item with breeze:wip and ask claim.sh.
+  # Each claim_check costs 2 `gh issue view` calls, so this loop is O(2N+2)
+  # API calls for N claimed items. Fine at current scale; if `bee status`
+  # ever gets called in a tight loop we should batch via a single GraphQL.
+  local wip_issue_numbers wip_pr_numbers
+  wip_issue_numbers=$(echo "$issues" | jq -r '.[] | select(.labels | map(.name) | index("breeze:wip")) | .number' 2>/dev/null || true)
+  wip_pr_numbers=$(echo "$prs" | jq -r '.[] | select(.labels | map(.name) | index("breeze:wip")) | .number' 2>/dev/null || true)
+  local n status
+  for n in $wip_issue_numbers $wip_pr_numbers; do
+    status=$(claim_check "$REPO" "$n" 2>/dev/null || echo "")
+    if [[ "$status" == "stale-claim" ]]; then
+      GH_STALE_CLAIMS=$((GH_STALE_CLAIMS + 1))
+    fi
+  done
+
+  if (( GH_ISSUES_OPEN == 0 && GH_PRS_OPEN == 0 )); then
+    GH_FINALIZED=true
+  fi
+}
+
+# ---- gather tick log -------------------------------------------------------
+# Emits:
+#   TICK_LOG_PATH = path (may or may not exist)
+#   TICK_LOG_LAST = last non-empty line, or ""
+
+gather_tick_log() {
+  TICK_LOG_PATH="$LOG"
+  TICK_LOG_LAST=""
+  if [[ -r "$LOG" ]]; then
+    TICK_LOG_LAST=$(awk 'NF' "$LOG" 2>/dev/null | tail -1 || true)
+  fi
+}
+
+# ---- render ----------------------------------------------------------------
+
+render_text() {
+  echo "bee status"
+  echo
+
+  # agent
+  local agent_line
+  if [[ "$AGENT_STATE" == "idle" ]]; then
+    agent_line="idle"
+  else
+    agent_line="running, pid=${AGENT_PID}"
+    if [[ -n "$AGENT_ROLE" ]]; then agent_line+=", role=${AGENT_ROLE}"; fi
+    if [[ -n "$AGENT_TARGET" ]]; then agent_line+=", target=${AGENT_TARGET}"; fi
+    if (( AGENT_CLAIMED_AGO >= 0 )); then
+      agent_line+=", claimed $(_fmt_duration "$AGENT_CLAIMED_AGO") ago"
+    fi
+  fi
+  printf 'agent:    %s\n' "$agent_line"
+
+  # launchd
+  local ld_line
+  if [[ "$LAUNCHD_STATE" == "not-installed" ]]; then
+    ld_line="not installed"
+  elif (( LAUNCHD_NEXT_TICK_SECS >= 0 )); then
+    local mins=$(( (LAUNCHD_NEXT_TICK_SECS + 30) / 60 ))
+    ld_line="loaded, next tick ~${mins}m"
+  else
+    ld_line="loaded"
+  fi
+  printf 'launchd:  %s\n' "$ld_line"
+
+  # github
+  local gh_line
+  if [[ "$GH_FINALIZED" == "true" ]]; then
+    gh_line="all clear — project finalized"
+  else
+    local issue_part pr_part stale_part
+    if (( GH_ISSUES_OPEN == 1 )); then issue_part="1 issue open"; else issue_part="${GH_ISSUES_OPEN} issues open"; fi
+    if [[ -n "$GH_ISSUE_NUMBERS" ]]; then
+      issue_part+=" (${GH_ISSUE_NUMBERS// /, })"
+    fi
+    if (( GH_PRS_OPEN == 1 )); then pr_part="1 PR open"; else pr_part="${GH_PRS_OPEN} PRs open"; fi
+    if (( GH_STALE_CLAIMS == 1 )); then stale_part="1 stale claim"; else stale_part="${GH_STALE_CLAIMS} stale claims"; fi
+    gh_line="${issue_part}, ${pr_part}, ${stale_part}"
+    if (( GH_HUMAN_ITEMS > 0 )); then
+      gh_line+=", ${GH_HUMAN_ITEMS} breeze:human"
+    fi
+  fi
+  printf 'github:   %s\n' "$gh_line"
+
+  # tick log
+  if [[ -n "$TICK_LOG_LAST" ]]; then
+    printf 'tick log: %s (last line: %s)\n' "$TICK_LOG_PATH" "$TICK_LOG_LAST"
+  else
+    printf 'tick log: %s (empty)\n' "$TICK_LOG_PATH"
+  fi
+}
+
+render_json() {
+  # Build with jq so quoting is safe.
+  jq -n \
+    --arg agent_state "$AGENT_STATE" \
+    --arg agent_pid "$AGENT_PID" \
+    --arg agent_role "$AGENT_ROLE" \
+    --arg agent_target "$AGENT_TARGET" \
+    --argjson agent_claimed_ago_secs "$AGENT_CLAIMED_AGO" \
+    --arg launchd_state "$LAUNCHD_STATE" \
+    --argjson launchd_next_tick_secs "$LAUNCHD_NEXT_TICK_SECS" \
+    --argjson issues_open "$GH_ISSUES_OPEN" \
+    --arg issue_numbers "$GH_ISSUE_NUMBERS" \
+    --argjson prs_open "$GH_PRS_OPEN" \
+    --argjson stale_claims "$GH_STALE_CLAIMS" \
+    --argjson human_items "$GH_HUMAN_ITEMS" \
+    --argjson finalized "$GH_FINALIZED" \
+    --arg tick_log_path "$TICK_LOG_PATH" \
+    --arg tick_log_last "$TICK_LOG_LAST" \
+    '{
+      agent: {
+        state: $agent_state,
+        pid: (if $agent_pid == "" then null else ($agent_pid | tonumber) end),
+        role: (if $agent_role == "" then null else $agent_role end),
+        target: (if $agent_target == "" then null else $agent_target end),
+        claimed_ago_secs: (if $agent_claimed_ago_secs < 0 then null else $agent_claimed_ago_secs end)
+      },
+      launchd: {
+        state: $launchd_state,
+        next_tick_secs: (if $launchd_next_tick_secs < 0 then null else $launchd_next_tick_secs end)
+      },
+      github: {
+        issues_open: $issues_open,
+        issue_numbers: ($issue_numbers | if . == "" then [] else split(" ") end),
+        prs_open: $prs_open,
+        stale_claims: $stale_claims,
+        human_items: $human_items,
+        finalized: $finalized
+      },
+      tick_log: {
+        path: $tick_log_path,
+        last_line: (if $tick_log_last == "" then null else $tick_log_last end)
+      }
+    }'
+}
+
+cmd_status() {
+  local fmt="text"
+  case "${1:-}" in
+    "") ;;
+    --json) fmt="json" ;;
+    *) echo "bee status: unknown flag: $1" >&2; usage >&2; exit 2 ;;
+  esac
+
+  gather_agent
+  gather_launchd
+  gather_github
+  gather_tick_log
+
+  if [[ "$fmt" == "json" ]]; then
+    render_json
+  else
+    render_text
+  fi
+
+  if (( GH_HUMAN_ITEMS > 0 )); then
+    exit 1
+  fi
+  exit 0
+}
+
+main() {
+  local cmd="${1:-help}"
+  shift || true
+  case "$cmd" in
+    status)       cmd_status "$@" ;;
+    help|-h|--help) usage ;;
+    *) echo "bee: unknown command: $cmd" >&2; usage >&2; exit 2 ;;
+  esac
+}
+
+main "$@"

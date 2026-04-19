@@ -60,7 +60,28 @@ ensure_label "breeze:wip"   "e4e669" "Agent has claimed this item"
 ensure_label "breeze:done"  "0e8a16" "All work for this item is complete"
 ensure_label "breeze:human" "d93f0b" "Agent gave up; needs human"
 
-# 4. launchd plist
+# 4. bee CLI on PATH
+step "exposing bee CLI on PATH"
+BEE_SRC="$REPO_ROOT/scripts/bee"
+chmod +x "$BEE_SRC" 2>/dev/null || true
+# Pick the first directory of these that exists on PATH. No auto-mkdir.
+BEE_LINK_DIR=""
+for candidate in "$HOME/.local/bin" "$HOME/bin" "/usr/local/bin" "/opt/homebrew/bin"; do
+  if [[ -d "$candidate" ]] && printf '%s' ":$PATH:" | grep -qF ":$candidate:"; then
+    BEE_LINK_DIR="$candidate"
+    break
+  fi
+done
+if [[ -n "$BEE_LINK_DIR" ]]; then
+  BEE_LINK="$BEE_LINK_DIR/bee"
+  ln -sf "$BEE_SRC" "$BEE_LINK"
+  ok "bee -> $BEE_LINK"
+else
+  warn "no writable PATH dir found (tried ~/.local/bin, ~/bin, /usr/local/bin, /opt/homebrew/bin)"
+  warn "  add one to PATH, then: ln -sf $BEE_SRC <dir>/bee"
+fi
+
+# 5. launchd plist
 step "installing launchd plist"
 PLIST_NAME="com.serenakeyitan.git-bee.plist"
 PLIST_SRC="$REPO_ROOT/launchd/$PLIST_NAME"
@@ -78,7 +99,7 @@ launchctl unload "$PLIST_DST" 2>/dev/null || true
 launchctl load "$PLIST_DST"
 ok "launchd plist loaded: $PLIST_DST"
 
-# 5. First tick (optional)
+# 6. First tick (optional)
 if [[ "${SKIP_FIRST_TICK:-0}" != "1" ]]; then
   step "running first tick (use SKIP_FIRST_TICK=1 to skip)"
   "$REPO_ROOT/scripts/tick.sh" || warn "first tick exited non-zero (check ~/.git-bee/tick.log)"
@@ -90,6 +111,7 @@ $(printf '\033[1;32m')git-bee installed.$(printf '\033[0m')
 
 Next:
   • Open a design-doc issue:   gh issue create --repo $REPO --template design-doc
+  • Check current state:       bee status
   • Watch the tick log:        tail -f ~/.git-bee/tick.log
   • Uninstall:                 launchctl unload $PLIST_DST
 

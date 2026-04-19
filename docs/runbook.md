@@ -10,6 +10,26 @@ How the loop actually runs. Read this if you're operating the bee.
 
 Does: checks prereqs (gh, git, jq, claude), configures SSH signing on the repo, creates the three `breeze:*` labels if missing, writes the launchd plist into `~/Library/LaunchAgents/`, loads it. Idempotent.
 
+## Status at a glance
+
+```bash
+bee status              # three-section block: agent, launchd, github + last tick log line
+bee status --json       # same data as JSON, for scripting
+bee help                # usage
+```
+
+`bee` is a read-only CLI. It never mutates GitHub or local state. Installed on PATH by `scripts/install.sh` (first writable of `~/.local/bin`, `~/bin`, `/usr/local/bin`, `/opt/homebrew/bin`).
+
+Exit codes:
+
+| Code | Meaning |
+|---|---|
+| `0` | agent idle or running cleanly |
+| `1` | project has `breeze:human` items — someone needs to look |
+| `2` | usage error |
+
+Overrides via env: `GIT_BEE_REPO`, `GIT_BEE_LOCK`, `GIT_BEE_LOG_DIR`.
+
 ## One tick
 
 ```bash
