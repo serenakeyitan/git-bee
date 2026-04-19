@@ -68,9 +68,9 @@ claim_check() {
 }
 
 claim_acquire() {
-  # Make the label add the atomic step. If the label was already present
-  # (gh returns exit 0 either way, so we check first but ONLY to decide
-  # whether to fail-fast on a fresh claim; the post-state is what matters).
+  # The CLAIM MARKER COMMENT is the atomic step — the label is idempotent
+  # metadata. Under contention, two agents may both post markers; the newest
+  # wins via _claim_latest_marker, and claim_is_mine verifies the winner.
   local repo="$1" number="$2" agent="$3"
   local status
   status=$(claim_check "$repo" "$number")
