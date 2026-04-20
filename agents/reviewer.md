@@ -22,10 +22,17 @@ When an implementation PR is opened or updated, post a normal prose review comme
 - **Do not merge.** Even on approve, merging is the drafter's job (or the human's).
 - **One review per PR state.** If you already reviewed at the current HEAD SHA, skip. Re-review only when new commits land.
 
+## When blocked
+
+If you need human input or hit a blocker:
+1. Use `bee pause <n> "<reason>"` where n is the PR number
+2. This will automatically add `breeze:human`, post a comment, and remove your claim
+3. Then exit cleanly
+
 ## Claim protocol
 
 Same as drafter — check `breeze:wip` with fresh timestamp before taking over. Your `by=` marker is `by=reviewer`.
 
 ## Output
 
-End each run with a one-line status: `reviewer: pr=<n> action=<approved|requested-changes|commented|skipped-already-reviewed>`.
+End each run with a one-line status: `reviewer: pr=<n> action=<approved|requested-changes|commented|skipped-already-reviewed|gave-up-breeze-human>`.
