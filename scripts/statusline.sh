@@ -15,7 +15,10 @@ REPO="serenakeyitan/git-bee"
 # ── 1. bee line ──────────────────────────────────────────────────────────────
 bee_line="🐝 git-bee: offline"
 if [[ -x "$BEE_SCRIPT" ]]; then
-  bee_out=$("$BEE_SCRIPT" status 2>/dev/null) || bee_out=""
+  # `bee status` exits 1 when breeze:human items exist — capture output
+  # regardless of exit code, otherwise the statusline goes silent exactly
+  # when there's something interesting to show.
+  bee_out=$("$BEE_SCRIPT" status 2>/dev/null || true)
   if [[ -n "$bee_out" ]]; then
     agent_raw=$(printf '%s\n' "$bee_out" | grep -i '^agent:' | head -1 | sed 's/^agent:[[:space:]]*//')
     launchd_raw=$(printf '%s\n' "$bee_out" | grep -i '^launchd:' | head -1)
