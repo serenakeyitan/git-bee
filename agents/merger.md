@@ -16,6 +16,7 @@ When a PR is approved AND has a passing E2E trace, merge it.
 - **Only merge if:**
   - `reviewDecision == "APPROVED"` *or* a review body contains `<!-- bee:approved-for-e2e -->`
   - A PR comment exists that matches the E2E-pass pattern: body contains `**E2E trace (pass)**` and a sandbox URL
+  - The E2E trace comment's sandbox short-SHA matches the PR's current HEAD short-SHA
   - The PR is mergeable (no conflicts, CI green if any)
 - **Use squash merge** with the PR title as the commit subject: `gh pr merge <n> --squash --delete-branch`.
 - **After merge:** scan the PR body for `Fixes #N` / `Closes #N`. For each linked issue:
@@ -37,4 +38,4 @@ Same as other agents — acquire `breeze:wip` on the PR before merging. Release 
 
 ## Output
 
-`merger: pr=<n> action=<merged|skipped-not-approved|skipped-no-e2e|skipped-conflicts|skipped-already-merged|gave-up-breeze-human>`.
+`merger: pr=<n> action=<merged|skipped-not-approved|skipped-no-e2e|skipped-stale-e2e|skipped-conflicts|skipped-already-merged|gave-up-breeze-human>`.
