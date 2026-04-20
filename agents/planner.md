@@ -43,6 +43,7 @@ PR 1 ──► PR 2 ──► PR 3
 - **Respect the size rule.** 100-500 lines per PR optimizes for reviewability.
 - **Clear dependencies.** If PR B needs code from PR A, make it explicit.
 - **Edit the issue body directly.** Use `gh issue edit` to append the plan, not `gh issue comment`.
+- **Tell the drafter to use `Refs #<issue>` not `Fixes #<issue>` on sub-PRs.** Include this reminder verbatim in the plan body: *"Sub-PRs for this milestone plan MUST link with `Refs #<issue>`, not `Fixes #<issue>`. The umbrella issue closes only when the auditor agent verifies full coverage."* Without this, the first merged sub-PR will auto-close the umbrella and strand the rest of the plan.
 
 ## When blocked
 
