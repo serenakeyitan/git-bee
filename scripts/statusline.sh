@@ -88,7 +88,7 @@ if [[ -x "$BEE_SCRIPT" ]]; then
     next_tick=$(printf '%s\n' "$launchd_raw" | grep -oE '[0-9]+m([0-9]+s)?|[0-9]+s' | head -1)
     [[ -z "$next_tick" ]] && next_tick="?"
 
-    # Open issue/PR numbers, cached
+    # Open issue/PR numbers + paused count, cached
     now=$(date +%s)
     use_cache=0
     if [[ -f "$CACHE_FILE" ]]; then
@@ -96,18 +96,26 @@ if [[ -x "$BEE_SCRIPT" ]]; then
       if [[ -n "$cached_epoch" ]] && (( now - cached_epoch < CACHE_TTL )); then
         issues_list=$(sed -n '2p' "$CACHE_FILE")
         prs_list=$(sed -n '3p' "$CACHE_FILE")
+        paused_count=$(sed -n '4p' "$CACHE_FILE")
         use_cache=1
       fi
     fi
     if (( use_cache == 0 )); then
       issues_list=$(gh issue list --repo "$REPO" --state open --json number --jq '[.[].number | "#\(.)"] | join(",")' 2>/dev/null || echo "?")
       prs_list=$(gh pr list --repo "$REPO" --state open --json number --jq '[.[].number | "#\(.)"] | join(",")' 2>/dev/null || echo "?")
-      printf '%s\n%s\n%s\n' "$now" "$issues_list" "$prs_list" > "$CACHE_FILE"
+      paused_issues=$(gh issue list --repo "$REPO" --state open --label "breeze:human" --json number --jq 'length' 2>/dev/null || echo 0)
+      paused_prs=$(gh pr list --repo "$REPO" --state open --label "breeze:human" --json number --jq 'length' 2>/dev/null || echo 0)
+      paused_count=$(( paused_issues + paused_prs ))
+      printf '%s\n%s\n%s\n%s\n' "$now" "$issues_list" "$prs_list" "$paused_count" > "$CACHE_FILE"
     fi
     [[ -z "$issues_list" ]] && issues_list="none"
     [[ -z "$prs_list" ]] && prs_list="none"
+    [[ -z "$paused_count" ]] && paused_count=0
 
     bee_line="🐝 git-bee: ${state} · next ${next_tick} · issues: ${issues_list} · PRs: ${prs_list}"
+    if (( paused_count > 0 )); then
+      bee_line="${bee_line} · ⚠ ${paused_count} paused"
+    fi
   fi
 fi
 
