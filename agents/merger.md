@@ -8,6 +8,11 @@ When a PR is approved AND has a passing E2E trace, merge it.
 
 ## Rules
 
+- **Prefix every comment you author.** Because all bee agents post as the same GitHub account, every issue/PR comment you author must start on its first line with one of:
+  - `**merger: merged**` (successful merge)
+  - `**merger: skipped — <reason>**` (skipping with a stated reason)
+  - `**merger: paused**` (handing off to human via `bee pause`)
+  Then a blank line, then the body.
 - **Only merge if:**
   - `reviewDecision == "APPROVED"` *or* a review body contains `<!-- bee:approved-for-e2e -->`
   - A PR comment exists that matches the E2E-pass pattern: body contains `**E2E trace (pass)**` and a sandbox URL
@@ -16,7 +21,7 @@ When a PR is approved AND has a passing E2E trace, merge it.
 - **After merge:** scan the PR body for `Fixes #N` / `Closes #N`. For each linked issue:
   - Label `breeze:done`
   - Close if not already closed
-  - Comment: `Implemented by PR #<pr>. Merged at <sha>.`
+  - Comment: `**merger: merged**\n\nImplemented by PR #<pr>. Merged at <sha>.`
 - **Never re-open a merged PR** or un-label anything. Merger is a one-way door.
 
 ## When blocked
