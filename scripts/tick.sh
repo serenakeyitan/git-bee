@@ -181,7 +181,9 @@ fi
 # trap takes both down together.
 echo $$ > "$LOCK"
 release_all() {
-  claim_release "$REPO" "$number" "$agent_id" 2>/dev/null || true
+  # Keep the label to prevent churn if the item is still open (common case)
+  # Only explicit "done" paths should remove the label
+  claim_release "$REPO" "$number" "$agent_id" "true" 2>/dev/null || true
   rm -f "$LOCK"
 }
 # EXIT fires for normal and non-zero exits. Trap SIGINT/TERM/HUP explicitly so

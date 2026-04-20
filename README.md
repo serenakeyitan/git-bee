@@ -26,6 +26,8 @@ Only three, matching the breeze/gardener convention. No `breeze:new` — absence
 
 Stale `breeze:wip` = labeled event timestamp older than 2 hours. Any agent may take over a stale claim.
 
+To prevent label churn, `breeze:wip` is kept when agents hand off work. The next agent refreshes the claim without removing/re-adding the label.
+
 ## Agent roles
 
 - [`agents/drafter.md`](agents/drafter.md) — Reads a design-doc issue, drafts the design in comments, opens implementation PRs linked with `Fixes #<issue>`. Also addresses reviewer feedback.

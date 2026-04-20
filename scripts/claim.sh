@@ -69,16 +69,25 @@ claim_acquire() {
   # The label is now the sole claim marker — no comment clutter.
   # The timestamp comes from the labeled event in GitHub's timeline.
   local repo="$1" number="$2" agent="$3"
-  local status
+  local status has_label
   status=$(claim_check "$repo" "$number")
+  has_label=$(gh issue view "$number" --repo "$repo" --json labels \
+    --jq '.labels | map(.name) | index("breeze:wip")' 2>/dev/null || echo "null")
+
   case "$status" in
     fresh-claim) return 1 ;;
     stale-claim)
-      gh issue edit "$number" --repo "$repo" --remove-label "breeze:wip" >/dev/null 2>&1 || true
+      # Only remove label if it exists (prevents unnecessary API calls)
+      if [[ "$has_label" != "null" ]]; then
+        gh issue edit "$number" --repo "$repo" --remove-label "breeze:wip" >/dev/null 2>&1 || true
+      fi
       ;;
   esac
-  # Simply add the label — the labeled event timestamp is automatic
-  gh issue edit "$number" --repo "$repo" --add-label "breeze:wip" >/dev/null
+  # Only add label if not already present (prevents churn on sequential claims).
+  # Timestamp comes from the labeled event itself (removed marker comment per PR #10).
+  if [[ "$has_label" == "null" ]]; then
+    gh issue edit "$number" --repo "$repo" --add-label "breeze:wip" >/dev/null
+  fi
   return 0
 }
 
@@ -87,14 +96,17 @@ claim_release() {
   # Ctrl-C, launchd unload, or non-zero exit still drops `breeze:wip`. SIGKILL
   # can't be trapped — stale claims from that path are cleared by the next
   # tick via claim_check's TTL check (CLAIM_TTL_SECONDS, default 2h).
-  local repo="$1" number="$2" agent="$3"
+  local repo="$1" number="$2" agent="$3" keep_label="${4:-false}"
   # Only release if the claim is ours. Prevents one agent dropping another's lock.
   if ! claim_is_mine "$repo" "$number" "$agent"; then
     printf 'claim_release: refusing to release — latest claim is not %s on %s#%s\n' \
       "$agent" "$repo" "$number" >&2
     return 1
   fi
-  gh issue edit "$number" --repo "$repo" --remove-label "breeze:wip" >/dev/null 2>&1 || true
+  # Skip label removal if keep_label=true (prevents churn on sequential claims)
+  if [[ "$keep_label" != "true" ]]; then
+    gh issue edit "$number" --repo "$repo" --remove-label "breeze:wip" >/dev/null 2>&1 || true
+  fi
   # Do not delete the marker — it's the audit trail.
 }
 
@@ -116,6 +128,6 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     acquire) claim_acquire "$@" ;;
     release) claim_release "$@" ;;
     mine)    claim_is_mine "$@" && echo "yes" || echo "no" ;;
-    *) echo "usage: claim.sh {check|acquire|release|mine} <repo> <number> [agent-id]" >&2; exit 2 ;;
+    *) echo "usage: claim.sh {check|acquire|release|mine} <repo> <number> [agent-id] [keep-label]" >&2; exit 2 ;;
   esac
 fi
