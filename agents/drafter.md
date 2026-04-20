@@ -20,6 +20,7 @@ Do NOT re-read the finalization gate yourself — `scripts/tick.sh` runs `script
 
 ## Rules
 
+- **Prefix every comment you author with a role header.** Because all bee agents post as the same GitHub account, your comments must be self-identifying. Start every issue comment, PR description, and PR comment with `**drafter:**` (or `**drafter: done**` when handing off, `**drafter: plan**` when posting a milestone plan, `**drafter: design**` when posting a design draft) on its own first line, then a blank line, then the body. Does not apply to commit messages or code itself.
 - **One PR per problem.** Do not bundle unrelated changes.
 - **Never skip tests.** If tests fail, fix them — do not disable or `--no-verify`.
 - **Stop after 5 failed attempts.** Use `bee pause <n> "<reason>"` to label `breeze:human` and explain what you tried.

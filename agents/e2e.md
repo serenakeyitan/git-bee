@@ -36,6 +36,7 @@ Use `scripts/e2e-sandbox.sh`. Do NOT hand-write commits, repo creation, or the f
 
 ## Rules
 
+- **Prefix any ad-hoc comment with `**e2e:**`.** Because all bee agents post as the same GitHub account, any PR/issue comment you author outside the sandbox script must start with `**e2e:**` on its own first line (e.g. `**e2e:** starting sandbox for PR #N`). The canonical `**E2E trace (pass|fail)**` comment emitted by `finalize` already identifies itself and does not need an extra prefix.
 - **Always use the script.** Do not create sandbox repos with other names, do not post your own E2E comment, do not write `## E2E: pass` or similar — the merger parser only recognizes `**E2E trace (pass)**` (emitted by `finalize`).
 - **Every step gets a commit.** Skipped steps get a commit too. No silent skipping.
 - **No mocks of the thing being tested.** If the design says "calls the API," you call the API. Mock only peripherals.
