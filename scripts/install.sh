@@ -60,7 +60,51 @@ ensure_label "breeze:wip"   "e4e669" "Agent has claimed this item"
 ensure_label "breeze:done"  "0e8a16" "All work for this item is complete"
 ensure_label "breeze:human" "d93f0b" "Agent gave up; needs human"
 
-# 4. bee CLI on PATH
+# 4. Configuration setup
+step "setting up git-bee configuration"
+CONFIG_FILE="$HOME/.git-bee/config.json"
+mkdir -p "$(dirname "$CONFIG_FILE")"
+
+if [[ ! -f "$CONFIG_FILE" ]]; then
+  # First-time setup: prompt for scope choice
+  echo ""
+  echo "How should git-bee watch GitHub notifications?"
+  echo "  (e) exclusion — watch all repos you have access to except an exclusion list (brave mode)"
+  echo "  (c) curated — only watch a specific allowlist of repos (experimental mode)"
+  echo ""
+  printf "Choose [e/c]: "
+
+  read -r scope_choice
+  case "$scope_choice" in
+    c|C)
+      cat > "$CONFIG_FILE" <<'EOF'
+{
+  "scope": "curated",
+  "exclude_repos": [],
+  "include_repos": []
+}
+EOF
+      ok "config: curated mode (edit include_repos with: bee config add include_repos <repo>)"
+      ;;
+    *)
+      cat > "$CONFIG_FILE" <<'EOF'
+{
+  "scope": "exclusion",
+  "exclude_repos": [
+    "unispark-inc/paperclip",
+    "unispark-inc/paperclip-context-tree"
+  ],
+  "include_repos": []
+}
+EOF
+      ok "config: exclusion mode with default exclusions"
+      ;;
+  esac
+else
+  ok "config exists: $CONFIG_FILE"
+fi
+
+# 5. bee CLI on PATH
 step "exposing bee CLI on PATH"
 BEE_SRC="$REPO_ROOT/scripts/bee"
 chmod +x "$BEE_SRC" 2>/dev/null || true
@@ -81,7 +125,7 @@ else
   warn "  add one to PATH, then: ln -sf $BEE_SRC <dir>/bee"
 fi
 
-# 5. launchd plist
+# 6. launchd plist
 step "installing launchd plist"
 PLIST_NAME="com.serenakeyitan.git-bee.plist"
 PLIST_SRC="$REPO_ROOT/launchd/$PLIST_NAME"
@@ -99,7 +143,7 @@ launchctl unload "$PLIST_DST" 2>/dev/null || true
 launchctl load "$PLIST_DST"
 ok "launchd plist loaded: $PLIST_DST"
 
-# 6. First tick (optional)
+# 7. First tick (optional)
 if [[ "${SKIP_FIRST_TICK:-0}" != "1" ]]; then
   step "running first tick (use SKIP_FIRST_TICK=1 to skip)"
   "$REPO_ROOT/scripts/tick.sh" || warn "first tick exited non-zero (check ~/.git-bee/tick.log)"
