@@ -2,15 +2,66 @@
 
 *(call it **bee**)*
 
-Anagent that buzzes through GitHub issues on a schedule, picks up unfinished work, and ships it while you're not watching.
+An autonomous agent that buzzes through GitHub issues on a schedule, picks up unfinished work, and ships it while you're not watching.
+
+## Flow
+
+```text
+  👤 human opens design-doc issue
+          │
+          ▼
+  ┌───────────────────────┐
+  │ design finalized? ────┼─── no ──► human edits issue ──┐
+  └───────┬───────────────┘                               │
+          │ yes                                           │
+          ▼                                               │
+  🐝 drafter appends milestone plan to issue              │
+          │                                               │
+          ▼                                               │
+  ┌───────────────────────┐                               │
+  │ plan finalized?   ────┼─── no ──► drafter revises ────┤
+  └───────┬───────────────┘                               │
+          │ yes                                           │
+          ▼                                               │
+  🐝 drafter opens implementation PR ◄────────────────────┘
+          │                          ▲
+          ▼                          │
+  🐝 reviewer reviews PR             │
+          │                          │
+          ▼                          │
+  ┌───────────────────────┐          │
+  │ approved?         ────┼── no ────┘  (drafter addresses feedback)
+  └───────┬───────────────┘
+          │ yes
+          ▼
+  🐝 e2e runs in sandbox repo
+          │
+          ▼
+  ┌───────────────────────┐
+  │ E2E passes?       ────┼── no ────► drafter fixes, re-enters loop
+  └───────┬───────────────┘
+          │ yes
+          ▼
+  🐝 merger squash-merges PR
+          │
+          ▼
+  ┌───────────────────────┐
+  │ more milestone steps? ┼── yes ──► back to drafter (next PR)
+  └───────┬───────────────┘
+          │ no
+          ▼
+      ✅ project shipped
+
+  Any agent gives up after 5 tries → ⚠ breeze:human (paused for human)
+```
 
 ## How it works
 
-1. You open a **design-doc issue** describing what you want built.
-2. A cron (launchd) fires `scripts/tick.sh` every 15 minutes.
+1. You open a **design-doc issue** describing what you want built; tick the "design finalized" checkbox when ready.
+2. A cron (launchd) fires `scripts/tick.sh` every 5 minutes (default).
 3. The tick checks: is an agent already running locally? If yes, exit.
 4. Otherwise it scans the repo for open issues/PRs without a fresh `breeze:wip` claim and picks the oldest one.
-5. It claims the item (label + timestamp comment), spawns an agent, and exits.
+5. It claims the item (adds `breeze:wip` label), spawns an agent, and exits.
 6. The agent works the item to completion, then removes its claim.
 7. When nothing is left open, the tick exits quietly. The project is finalized.
 
@@ -37,7 +88,7 @@ To prevent label churn, `breeze:wip` is kept when agents hand off work. The next
 
 ## Cron
 
-`launchd/com.serenakeyitan.git-bee.plist` — installs `scripts/tick.sh` as a 15-minute launch agent. Install with:
+`launchd/com.serenakeyitan.git-bee.plist` — installs `scripts/tick.sh` as a 5-minute launch agent (default). Install with:
 
 ```bash
 cp launchd/com.serenakeyitan.git-bee.plist ~/Library/LaunchAgents/
