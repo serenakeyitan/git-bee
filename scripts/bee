@@ -111,13 +111,12 @@ gather_agent() {
     fi
   fi
 
-  # Best-effort: claim age from the latest marker on AGENT_TARGET.
+  # Best-effort: claim age from the latest labeled event on AGENT_TARGET.
   if [[ -n "$AGENT_TARGET" ]]; then
     local n="${AGENT_TARGET#\#}"
-    local marker claimed_at
-    marker=$(_claim_latest_marker "$REPO" "$n" 2>/dev/null || true)
-    if [[ -n "$marker" ]]; then
-      claimed_at=$(echo "$marker" | awk '{print $1}')
+    local claimed_at
+    claimed_at=$(_claim_latest_marker "$REPO" "$n" 2>/dev/null || true)
+    if [[ -n "$claimed_at" ]]; then
       local then_s now_s
       then_s=$(_iso_to_epoch "$claimed_at")
       now_s=$(date -u +%s)

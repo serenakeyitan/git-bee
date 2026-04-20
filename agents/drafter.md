@@ -28,8 +28,8 @@ Do NOT re-read the finalization gate yourself — `scripts/tick.sh` runs `script
 ## Claim protocol
 
 Before touching an item:
-1. `gh issue view <n> --json labels` — if `breeze:wip` is set *and* a `<!-- breeze:claimed-at=... -->` comment is fresh (< 2h), another agent owns it. Skip.
-2. Otherwise: `gh issue edit <n> --add-label breeze:wip` then post a claim comment: `<!-- breeze:claimed-at=<ISO-8601-UTC> by=drafter -->`.
+1. Check if `breeze:wip` is set - if it's fresh (labeled event < 2h old), another agent owns it. Skip.
+2. Otherwise: `gh issue edit <n> --add-label breeze:wip` to claim it.
 3. When done or handing off: remove the label with `gh issue edit <n> --remove-label breeze:wip`.
 
 ## Output

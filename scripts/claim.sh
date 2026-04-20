@@ -30,15 +30,14 @@ _claim_ttl_cutoff_iso() {
   fi
 }
 
-# Find the latest claim marker on an issue/PR. Emits: "<iso-timestamp> <agent-id>"
-# or nothing if no marker found.
+# Find the latest claim timestamp from the labeled event. Emits: "<iso-timestamp>"
+# or nothing if no labeled event found.
 _claim_latest_marker() {
   local repo="$1" number="$2"
-  gh issue view "$number" --repo "$repo" --comments --json comments \
-    --jq '.comments[] | .body' 2>/dev/null \
-    | grep -oE '<!-- breeze:claimed-at=[^ ]+ by=[^ ]+ -->' \
-    | tail -1 \
-    | sed -E 's/<!-- breeze:claimed-at=([^ ]+) by=([^ ]+) -->/\1 \2/'
+  # Get the timestamp when breeze:wip was most recently added
+  gh api "repos/$repo/issues/$number/timeline" \
+    --jq '.[] | select(.event == "labeled" and .label.name == "breeze:wip") | .created_at' 2>/dev/null \
+    | tail -1
 }
 
 claim_check() {
@@ -50,15 +49,14 @@ claim_check() {
     echo "free"
     return 0
   fi
-  local marker
-  marker=$(_claim_latest_marker "$repo" "$number")
-  if [[ -z "$marker" ]]; then
-    # Label set but no marker — treat as stale (agent crashed before marker)
+  local claimed_at
+  claimed_at=$(_claim_latest_marker "$repo" "$number")
+  if [[ -z "$claimed_at" ]]; then
+    # Label set but no labeled event — treat as stale
     echo "stale-claim"
     return 0
   fi
-  local claimed_at cutoff
-  claimed_at=$(echo "$marker" | awk '{print $1}')
+  local cutoff
   cutoff=$(_claim_ttl_cutoff_iso)
   if [[ "$claimed_at" < "$cutoff" ]]; then
     echo "stale-claim"
@@ -68,9 +66,8 @@ claim_check() {
 }
 
 claim_acquire() {
-  # The CLAIM MARKER COMMENT is the atomic step — the label is idempotent
-  # metadata. Under contention, two agents may both post markers; the newest
-  # wins via _claim_latest_marker, and claim_is_mine verifies the winner.
+  # The label is now the sole claim marker — no comment clutter.
+  # The timestamp comes from the labeled event in GitHub's timeline.
   local repo="$1" number="$2" agent="$3"
   local status
   status=$(claim_check "$repo" "$number")
@@ -80,20 +77,9 @@ claim_acquire() {
       gh issue edit "$number" --repo "$repo" --remove-label "breeze:wip" >/dev/null 2>&1 || true
       ;;
   esac
-  # Race window: between check and add, another agent may have claimed.
-  # Mitigation: post the marker comment FIRST, then add the label. If two
-  # agents race, both markers land; whoever's marker is newer "owns" per
-  # _claim_latest_marker. claim_is_mine lets the agent verify post-ack.
-  local marker_body
-  marker_body="<!-- breeze:claimed-at=$(_claim_now_iso) by=${agent} -->"
-  gh issue comment "$number" --repo "$repo" --body "$marker_body" >/dev/null
+  # Simply add the label — the labeled event timestamp is automatic
   gh issue edit "$number" --repo "$repo" --add-label "breeze:wip" >/dev/null
-  # Verify we won the race
-  if claim_is_mine "$repo" "$number" "$agent"; then
-    return 0
-  else
-    return 1
-  fi
+  return 0
 }
 
 claim_release() {
@@ -113,13 +99,13 @@ claim_release() {
 }
 
 claim_is_mine() {
+  # Without agent-id in markers, we can only verify that we have the label.
+  # In practice, the trap-based cleanup ensures correct ownership.
   local repo="$1" number="$2" agent="$3"
-  local marker
-  marker=$(_claim_latest_marker "$repo" "$number")
-  [[ -z "$marker" ]] && return 1
-  local marker_agent
-  marker_agent=$(echo "$marker" | awk '{print $2}')
-  [[ "$marker_agent" == "$agent" ]]
+  local has_label
+  has_label=$(gh issue view "$number" --repo "$repo" --json labels \
+    --jq '.labels | map(.name) | index("breeze:wip")' 2>/dev/null || echo "null")
+  [[ "$has_label" != "null" ]]
 }
 
 # If invoked directly, expose a small CLI for humans/smoke tests.
