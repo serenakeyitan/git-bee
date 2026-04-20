@@ -57,6 +57,8 @@ pick_target() {
   local pr_basics
   pr_basics=$(gh pr list --repo "$REPO" --state open --search "sort:created-asc" --limit 50 \
     --json number,reviewDecision,labels,reviews,comments 2>/dev/null || echo "[]")
+  # Priority sort: priority:high first, then original (created-asc) order.
+  pr_basics=$(echo "$pr_basics" | jq '[ .[] | . as $p | $p + {_prio: (if ($p.labels | map(.name) | index("priority:high")) then 0 else 1 end)} ] | sort_by(._prio) | map(del(._prio))')
 
   # 1. Approved PRs that also have a passing E2E trace → merger.
   # "Approved" = reviewDecision == APPROVED OR a review body contains the marker.
@@ -118,6 +120,7 @@ pick_target() {
   local pr_rows
   pr_rows=$(gh pr list --repo "$REPO" --state open --search "sort:created-asc" --limit 50 \
     --json number,reviewDecision,labels,reviews,headRefOid 2>/dev/null || echo "[]")
+  pr_rows=$(echo "$pr_rows" | jq '[ .[] | . as $p | $p + {_prio: (if ($p.labels | map(.name) | index("priority:high")) then 0 else 1 end)} ] | sort_by(._prio) | map(del(._prio))')
 
   local unreviewed_prs
   unreviewed_prs=$(echo "$pr_rows" | jq -r '
@@ -161,7 +164,12 @@ pick_target() {
   local all_open_issues
   all_open_issues=$(gh issue list --repo "$REPO" --state open --search "sort:created-asc" --limit 50 \
     --json number,labels \
-    --jq '.[] | select(.labels | map(.name) | index("breeze:wip") | not) | select(.labels | map(.name) | index("breeze:human") | not) | .number' 2>/dev/null || true)
+    --jq '[ .[]
+            | select(.labels | map(.name) | index("breeze:wip") | not)
+            | select(.labels | map(.name) | index("breeze:human") | not)
+            | . + {_prio: (if (.labels | map(.name) | index("priority:high")) then 0 else 1 end)} ]
+          | sort_by(._prio)
+          | .[].number' 2>/dev/null || true)
 
   for n in $all_open_issues; do
     if echo "$open_pr_bodies" | grep -qiE "(fixes|closes|resolves)[[:space:]]+#${n}\b"; then
@@ -243,7 +251,16 @@ pick_target() {
 target=$(pick_target)
 
 if [[ -z "$target" ]]; then
-  log "idle: no unclaimed open items — project finalized or nothing to do"
+  # Pause-don't-stop: distinguish "all open work paused on human" from
+  # genuine "nothing to do", so the tick log makes it visible when the
+  # loop is blocked on human action rather than finalized.
+  paused_count=$(gh issue list --repo "$REPO" --state open --label "breeze:human" --json number --jq 'length' 2>/dev/null || echo 0)
+  paused_count=$(( paused_count + $(gh pr list --repo "$REPO" --state open --label "breeze:human" --json number --jq 'length' 2>/dev/null || echo 0) ))
+  if (( paused_count > 0 )); then
+    log "idle: all open work paused on human (${paused_count} item(s) with breeze:human)"
+  else
+    log "idle: no unclaimed open items — project finalized or nothing to do"
+  fi
   exit 0
 fi
 
