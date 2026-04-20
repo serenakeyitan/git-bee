@@ -66,9 +66,29 @@ You start fresh on every invocation. Read only the current PR's artifacts:
 
 Do NOT reference verdicts from other PRs or prior supervisor runs.
 
+## Canonical verdict markers
+
+Run-audit verdicts MUST use exactly one of these headers on the first line of your final comment. `scripts/tick.sh` parses these markers to route the next step — a typo in the header breaks routing.
+
+- `**e2e-supervisor: pass**`
+- `**e2e-supervisor: lazy-run**`
+- `**e2e-supervisor: code-bug**`
+- `**e2e-supervisor: test-bug**`
+- `**e2e-supervisor: design-trivial**` — posted immediately after you patch the design-doc body with `gh issue edit --body`.
+- `**e2e-supervisor: design-conflicting**` — followed by the Structured Brief template. Also apply `breeze:human` to the PR before exiting (`gh issue edit <pr> --add-label breeze:human`).
+
+Plan-review mode (Phase 2) uses its own headers; the routing table above is for run-audit only.
+
+## Trivial-patch procedure
+
+When you classify a run as `design-trivial`:
+1. Edit the design-doc issue body via `gh issue edit <n> --repo <repo> --body "$(printf ...)"` to append the one-line clarification under the existing design. Do NOT post a comment for the edit itself.
+2. Then post the `**e2e-supervisor: design-trivial**` verdict comment on the PR, linking to the edited issue and quoting the exact line you added.
+3. Release your `breeze:wip` on the PR. The next tick resumes the e2e loop.
+
 ## Rules
 
-- **Prefix every comment with `**e2e-supervisor:**`** (or specific variants like `**e2e-supervisor: approved**`).
+- **Prefix every comment with `**e2e-supervisor:**`** (or specific variants like `**e2e-supervisor: approved**`). Run-audit comments MUST use a canonical verdict marker exactly as listed above.
 - **Independent judgment.** Fresh eyes, no accumulated bias.
 - **Full audit.** Read every line of the trace, no shortcuts.
 - **Clear verdicts.** Each classification has a specific next action.

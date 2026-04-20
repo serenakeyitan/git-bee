@@ -96,6 +96,40 @@ pick_target() {
     return
   fi
 
+  # 1b'. PRs with a supervisor verdict — route based on the verdict. The
+  # `pass` verdict is covered by the approved+E2E-trace-pass route above,
+  # so here we only need to handle the five non-pass outcomes.
+  local supervised
+  supervised=$(echo "$pr_basics" | jq -r '
+    .[]
+    | . as $pr
+    | select($pr.labels | map(.name) | index("breeze:wip") | not)
+    | select($pr.labels | map(.name) | index("breeze:human") | not)
+    | ([$pr.comments[]? | select(.body // "" | test("\\*\\*e2e-supervisor: (pass|lazy-run|code-bug|test-bug|design-trivial|design-conflicting)\\*\\*"))]
+        | sort_by(.createdAt) | last) as $v
+    | select($v != null)
+    | ($v.body | capture("\\*\\*e2e-supervisor: (?<verdict>pass|lazy-run|code-bug|test-bug|design-trivial|design-conflicting)\\*\\*").verdict) as $vd
+    | "\($pr.number) \($vd)"
+  ' 2>/dev/null || true)
+  if [[ -n "$supervised" ]]; then
+    while IFS= read -r row; do
+      [[ -z "$row" ]] && continue
+      local pr_n="${row%% *}" vd="${row##* }"
+      case "$vd" in
+        lazy-run)  echo "e2e $pr_n"; return ;;
+        code-bug)  echo "drafter $pr_n"; return ;;
+        test-bug)  echo "e2e-designer $pr_n"; return ;;
+        design-conflicting)
+          # Belt-and-suspenders: supervisor should have applied breeze:human,
+          # but ensure it's labeled so this tick never re-dispatches.
+          gh issue edit "$pr_n" --repo "$REPO" --add-label "breeze:human" >/dev/null 2>&1 || true
+          log "skip: #$pr_n design-conflicting — labeled breeze:human, held for human"
+          ;;
+        design-trivial|pass) : ;;  # handled elsewhere / nothing to do
+      esac
+    done <<< "$supervised"
+  fi
+
   # 1c. Approved PRs without an E2E trace yet → E2E.
   local approved_prs
   approved_prs=$(echo "$pr_basics" | jq -r '
