@@ -42,6 +42,10 @@ Usage:
   bee status             Print a terse three-section status block
   bee status --json      Same data, JSON-encoded
   bee pause <n> <reason> Label issue/PR #n with breeze:human and comment
+  bee config get [key]   Get configuration value(s)
+  bee config set <key> <value>  Set a configuration value
+  bee config add <key> <value>  Add value to list config
+  bee config remove <key> <value>  Remove value from list config
 
 Exit codes:
   0  agent idle or running cleanly
@@ -411,12 +415,115 @@ EOF
   echo "bee pause: labeled #${number} with breeze:human"
 }
 
+CONFIG_FILE="${HOME}/.git-bee/config.json"
+
+cmd_config() {
+  local action="${1:-get}"
+  shift || true
+
+  # Ensure config directory exists
+  mkdir -p "$(dirname "$CONFIG_FILE")"
+
+  # Create default config if not exists
+  if [[ ! -f "$CONFIG_FILE" ]]; then
+    cat > "$CONFIG_FILE" <<'EOF'
+{
+  "scope": "exclusion",
+  "exclude_repos": [
+    "unispark-inc/paperclip",
+    "unispark-inc/paperclip-context-tree"
+  ],
+  "include_repos": []
+}
+EOF
+  fi
+
+  case "$action" in
+    get)
+      local key="${1:-}"
+      if [[ -z "$key" ]]; then
+        # Show entire config
+        jq . "$CONFIG_FILE" 2>/dev/null || {
+          echo "bee config: malformed config.json" >&2
+          exit 2
+        }
+      else
+        # Show specific key
+        jq -r ".${key} // null" "$CONFIG_FILE" 2>/dev/null || {
+          echo "bee config: malformed config.json" >&2
+          exit 2
+        }
+      fi
+      ;;
+
+    set)
+      local key="${1:-}"
+      local value="${2:-}"
+      if [[ -z "$key" ]] || [[ -z "$value" ]]; then
+        echo "bee config set: missing arguments" >&2
+        echo "usage: bee config set <key> <value>" >&2
+        exit 2
+      fi
+      # Set a scalar value
+      jq ".${key} = \"${value}\"" "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && \
+        mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE" || {
+        echo "bee config: failed to update config" >&2
+        exit 2
+      }
+      echo "bee config: set ${key} = ${value}"
+      ;;
+
+    add)
+      local key="${1:-}"
+      local value="${2:-}"
+      if [[ -z "$key" ]] || [[ -z "$value" ]]; then
+        echo "bee config add: missing arguments" >&2
+        echo "usage: bee config add <key> <value>" >&2
+        exit 2
+      fi
+      # Add to array (create array if not exists)
+      jq "if .${key} | type == \"array\" then .${key} += [\"${value}\"] else .${key} = [\"${value}\"] end" \
+        "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && \
+        mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE" || {
+        echo "bee config: failed to update config" >&2
+        exit 2
+      }
+      echo "bee config: added ${value} to ${key}"
+      ;;
+
+    remove)
+      local key="${1:-}"
+      local value="${2:-}"
+      if [[ -z "$key" ]] || [[ -z "$value" ]]; then
+        echo "bee config remove: missing arguments" >&2
+        echo "usage: bee config remove <key> <value>" >&2
+        exit 2
+      fi
+      # Remove from array
+      jq "if .${key} | type == \"array\" then .${key} -= [\"${value}\"] else . end" \
+        "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && \
+        mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE" || {
+        echo "bee config: failed to update config" >&2
+        exit 2
+      }
+      echo "bee config: removed ${value} from ${key}"
+      ;;
+
+    *)
+      echo "bee config: unknown action: $action" >&2
+      echo "usage: bee config get|set|add|remove" >&2
+      exit 2
+      ;;
+  esac
+}
+
 main() {
   local cmd="${1:-help}"
   shift || true
   case "$cmd" in
     status)       cmd_status "$@" ;;
     pause)        cmd_pause "$@" ;;
+    config)       cmd_config "$@" ;;
     help|-h|--help) usage ;;
     *) echo "bee: unknown command: $cmd" >&2; usage >&2; exit 2 ;;
   esac
