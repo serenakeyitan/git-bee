@@ -271,6 +271,8 @@ render_text() {
   local ld_line
   if [[ "$LAUNCHD_STATE" == "not-installed" ]]; then
     ld_line="not installed"
+  elif [[ "$AGENT_STATE" == "running" ]]; then
+    ld_line="loaded, next: after agent"
   elif (( LAUNCHD_NEXT_TICK_SECS >= 0 )); then
     if (( LAUNCHD_NEXT_TICK_SECS < 60 )); then
       ld_line="loaded, next tick ~${LAUNCHD_NEXT_TICK_SECS}s"
