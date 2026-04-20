@@ -23,6 +23,13 @@ mkdir -p "$LOG_DIR"
 
 log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" | tee -a "$LOG"; }
 
+# Run notification scanner before routing
+# This turns unresolved GitHub notifications into issues
+if [[ -x "$HERE/notification-scanner.sh" ]]; then
+  log "running notification scanner"
+  "$HERE/notification-scanner.sh" 2>&1 | tee -a "$LOG" || log "notification scanner failed (rc=$?)"
+fi
+
 # Guard 1: local PID lock
 if [[ -f "$LOCK" ]]; then
   pid=$(cat "$LOCK" 2>/dev/null || echo "")
