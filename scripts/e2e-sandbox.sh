@@ -59,6 +59,11 @@ cmd_create() {
   git config --local user.signingkey "$HOME/.ssh/id_ed25519.pub"
   git config --local commit.gpgsign true
 
+  # Track start time for duration measurement
+  local start_timestamp
+  # macOS doesn't support %N, use python for cross-platform millisecond timestamps
+  start_timestamp=$(python3 -c 'import time; print(int(time.time() * 1000))')
+
   cat > README.md <<EOF
 # E2E trace — git-bee #${pr_number} @ ${short_sha}
 
@@ -72,7 +77,11 @@ EOF
   "pr_number": ${pr_number},
   "pr_sha": "${pr_sha}",
   "upstream": "${UPSTREAM_REPO}",
-  "created_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  "created_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "start_timestamp_ms": ${start_timestamp},
+  "steps": [],
+  "tokens": {"input": 0, "output": 0},
+  "cost_usd_cents": 0
 }
 EOF
   git add -A
@@ -96,6 +105,26 @@ cmd_step() {
   exit_code=$?
   set -e
 
+  # Check if stdout contains JSON assertions in the format {"passed": N, "total": M}
+  local assertions='{"passed": 1, "total": 1}'  # default for simple exit code
+  if [[ "$exit_code" == "0" ]]; then
+    # Try to parse JSON assertions from the last line of stdout
+    local last_line
+    last_line=$(tail -n1 "$out" 2>/dev/null || echo "")
+    if echo "$last_line" | grep -qE '^\s*\{"passed":\s*[0-9]+\s*,\s*"total":\s*[0-9]+\s*\}\s*$'; then
+      assertions="$last_line"
+      # Validate that passed <= total
+      local passed total
+      passed=$(echo "$assertions" | sed -nE 's/.*"passed":\s*([0-9]+).*/\1/p')
+      total=$(echo "$assertions" | sed -nE 's/.*"total":\s*([0-9]+).*/\1/p')
+      if [[ "$passed" != "$total" ]]; then
+        exit_code=1  # Override exit code if not all assertions passed
+      fi
+    fi
+  else
+    assertions='{"passed": 0, "total": 1}'
+  fi
+
   local step_dir="steps/step-${num}"
   mkdir -p "$step_dir"
   cp "$out" "$step_dir/stdout.txt"
@@ -103,6 +132,24 @@ cmd_step() {
   echo "$exit_code" > "$step_dir/exit-code"
   echo "$cmd" > "$step_dir/command"
   echo "$desc" > "$step_dir/description"
+  echo "$assertions" > "$step_dir/assertions.json"
+
+  # Update .meta.json with step info
+  local step_info
+  step_info=$(jq -n \
+    --arg n "$num" \
+    --arg desc "$desc" \
+    --argjson exit "$exit_code" \
+    --argjson assertions "$assertions" \
+    '{
+      "n": ($n | tonumber),
+      "description": $desc,
+      "exit": $exit,
+      "skipped": false,
+      "assertions": $assertions
+    }')
+
+  jq ".steps += [$step_info]" .meta.json > .meta.json.tmp && mv .meta.json.tmp .meta.json
 
   git add -A
   local msg_body
@@ -113,6 +160,7 @@ command:
 ${cmd}
 
 exit_code: ${exit_code}
+assertions: ${assertions}
 
 stdout (first 4KB):
 $(head -c 4096 "$out")
@@ -145,6 +193,24 @@ cmd_skip() {
   echo "skipped" > "$step_dir/exit-code"
   echo "$desc" > "$step_dir/description"
   echo "$reason" > "$step_dir/skip-reason"
+
+  # Update .meta.json with skipped step info
+  local step_info
+  step_info=$(jq -n \
+    --arg n "$num" \
+    --arg desc "$desc" \
+    --arg reason "$reason" \
+    '{
+      "n": ($n | tonumber),
+      "description": $desc,
+      "exit": 0,
+      "skipped": true,
+      "skip_reason": $reason,
+      "assertions": {"passed": 0, "total": 0}
+    }')
+
+  jq ".steps += [$step_info]" .meta.json > .meta.json.tmp && mv .meta.json.tmp .meta.json
+
   git add -A
   git commit -q -S -m "step-${num} skipped — ${desc} — ${reason}"
   git push -q origin main
@@ -156,8 +222,37 @@ cmd_finalize() {
   # Resolve to absolute path to avoid issues with relative paths like "."
   sandbox_path=$(cd "$sandbox_path" && pwd)
   cd "$sandbox_path"
-  local pr_number
+  local pr_number pr_sha
   pr_number=$(jq -r '.pr_number' .meta.json)
+  pr_sha=$(jq -r '.pr_sha' .meta.json)
+
+  # Calculate duration
+  local start_timestamp end_timestamp duration_ms
+  start_timestamp=$(jq -r '.start_timestamp_ms' .meta.json)
+  # macOS doesn't support %N, use python for cross-platform millisecond timestamps
+  end_timestamp=$(python3 -c 'import time; print(int(time.time() * 1000))')
+  duration_ms=$((end_timestamp - start_timestamp))
+
+  # Get token and cost metrics (from .meta.json if updated by agents)
+  local tokens cost_usd_cents
+  tokens=$(jq -c '.tokens // {"input": 0, "output": 0}' .meta.json)
+  cost_usd_cents=$(jq -r '.cost_usd_cents // 0' .meta.json)
+
+  # Generate RESULT.json
+  local steps_array
+  steps_array=$(jq -c '.steps' .meta.json)
+
+  cat > RESULT.json <<EOF
+{
+  "pr": ${pr_number},
+  "sha": "${pr_sha:0:7}",
+  "status": "${result}",
+  "steps": ${steps_array},
+  "duration_ms": ${duration_ms},
+  "tokens": ${tokens},
+  "cost_usd_cents": ${cost_usd_cents}
+}
+EOF
 
   local msg="final: ${result}"
   [[ -n "$reason" ]] && msg="${msg} — ${reason}"
@@ -168,6 +263,14 @@ cmd_finalize() {
 ${reason:-No additional notes.}
 
 See the step-NN commits for the full trace.
+
+## Metrics Summary
+
+- Duration: ${duration_ms}ms
+- Tokens: $(echo "$tokens" | jq -r '"input: \(.input), output: \(.output)"')
+- Estimated cost: \$$(printf "%.2f" $(echo "scale=2; $cost_usd_cents / 100" | bc))
+
+Machine-readable metrics in RESULT.json.
 EOF
   git add -A
   git commit -q -S --allow-empty -m "$msg"
@@ -197,18 +300,37 @@ EOF
   echo "finalized ${result}: ${sandbox_url}"
 }
 
+cmd_update_metrics() {
+  local sandbox_path="$1"
+  local input_tokens="${2:-0}"
+  local output_tokens="${3:-0}"
+  local cost_cents="${4:-0}"
+
+  # Resolve to absolute path
+  sandbox_path=$(cd "$sandbox_path" && pwd)
+  cd "$sandbox_path"
+
+  # Update metrics in .meta.json
+  jq ".tokens.input += $input_tokens | .tokens.output += $output_tokens | .cost_usd_cents += $cost_cents" \
+    .meta.json > .meta.json.tmp && mv .meta.json.tmp .meta.json
+
+  echo "updated metrics: +${input_tokens} input, +${output_tokens} output, +${cost_cents}¢"
+}
+
 cmd="${1:-}"; shift || true
 case "$cmd" in
   create)   cmd_create "$@" ;;
   step)     cmd_step "$@" ;;
   skip)     cmd_skip "$@" ;;
   finalize) cmd_finalize "$@" ;;
+  update-metrics) cmd_update_metrics "$@" ;;
   *) cat >&2 <<EOF
 usage:
   e2e-sandbox.sh create <pr-number>
   e2e-sandbox.sh step <sandbox-path> "<desc>" "<cmd>"
   e2e-sandbox.sh skip <sandbox-path> "<desc>" "<reason>"
   e2e-sandbox.sh finalize <sandbox-path> <pass|fail> [reason]
+  e2e-sandbox.sh update-metrics <sandbox-path> [input-tokens] [output-tokens] [cost-cents]
 EOF
   exit 2 ;;
 esac

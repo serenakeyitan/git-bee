@@ -38,23 +38,37 @@ ensure_labels() {
     done
 }
 
-# Check if a repo is in scope based on config
+# Check if a repo is in scope based on config.
+# Each entry in include_repos / exclude_repos may be a literal "owner/name"
+# or a glob ending in `*` (prefix match). Globs let us auto-cover throwaway
+# sandboxes like serenakeyitan/git-bee-e2e-<sha> without hand-editing config.
+_match_any() {
+    local repo="$1"; shift
+    local pattern
+    while IFS= read -r pattern; do
+        [[ -z "$pattern" ]] && continue
+        # shellcheck disable=SC2053 — intentional glob match
+        if [[ "$repo" == $pattern ]]; then
+            return 0
+        fi
+    done <<< "$1"
+    return 1
+}
+
 is_in_scope() {
     local repo="$1"
 
     if [[ "$SCOPE" == "curated" ]]; then
-        # Only process if in include list
         if [[ -z "$INCLUDE_REPOS" ]]; then
-            return 1  # No includes = nothing in scope
+            return 1
         fi
-        echo "$INCLUDE_REPOS" | grep -qF "$repo" && return 0
+        _match_any "$repo" "$INCLUDE_REPOS" && return 0
         return 1
     else
-        # Process unless in exclude list (exclusion mode)
         if [[ -z "$EXCLUDE_REPOS" ]]; then
-            return 0  # No excludes = everything in scope
+            return 0
         fi
-        echo "$EXCLUDE_REPOS" | grep -qF "$repo" && return 1
+        _match_any "$repo" "$EXCLUDE_REPOS" && return 1
         return 0
     fi
 }

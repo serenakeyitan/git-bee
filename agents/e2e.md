@@ -25,6 +25,12 @@ Use `scripts/e2e-sandbox.sh`. Do NOT hand-write commits, repo creation, or the f
    scripts/e2e-sandbox.sh step "$path" "<short description>" "<shell command>"
    ```
    Every step is a signed commit carrying stdout/stderr/exit-code. Fails fast unless `STEP_ALLOW_FAIL=1`.
+
+   Steps can optionally return structured assertions by outputting JSON as the last line:
+   ```
+   echo '{"passed": 4, "total": 5}'
+   ```
+   This allows tracking partial success (e.g., 4 of 5 checks passed). Without JSON output, steps default to `{"passed": 1, "total": 1}` for exit 0, or `{"passed": 0, "total": 1}` for non-zero exit.
 4. For steps you legitimately cannot run in this environment (e.g. launchd load, interactive auth), use:
    ```
    scripts/e2e-sandbox.sh skip "$path" "<description>" "<reason>"
@@ -37,6 +43,17 @@ Use `scripts/e2e-sandbox.sh`. Do NOT hand-write commits, repo creation, or the f
    scripts/e2e-sandbox.sh finalize "$path" fail "<one-line reason>"
    ```
    This archives the sandbox and posts the canonical `**E2E trace (pass|fail)**` comment on the PR. Merger dispatch depends on that exact string — do not substitute your own comment.
+
+   The finalize step now also generates a machine-readable `RESULT.json` with:
+   - Per-step assertions breakdown (`{"passed": N, "total": M}`)
+   - Overall duration in milliseconds
+   - Token usage and cost metrics (if updated by agents)
+
+6. Optional: Update metrics during execution:
+   ```
+   scripts/e2e-sandbox.sh update-metrics "$path" <input-tokens> <output-tokens> <cost-cents>
+   ```
+   Use this to track agent token usage and costs for reporting.
 
 ## Rules
 
