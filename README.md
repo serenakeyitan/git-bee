@@ -2,15 +2,47 @@
 
 *(call it **bee**)*
 
-Anagent that buzzes through GitHub issues on a schedule, picks up unfinished work, and ships it while you're not watching.
+An autonomous agent that buzzes through GitHub issues on a schedule, picks up unfinished work, and ships it while you're not watching.
+
+## Flow
+
+```mermaid
+flowchart TD
+    H1([👤 Human opens design-doc issue]) --> H2{Human ticks<br/>design finalized?}
+    H2 -- no --> H1
+    H2 -- yes --> P1[🐝 drafter appends<br/>milestone plan to issue]
+    P1 --> P2{Human ticks<br/>plan finalized?}
+    P2 -- no --> P1
+    P2 -- yes --> D1[🐝 drafter opens<br/>implementation PR]
+    D1 --> R1[🐝 reviewer reviews PR]
+    R1 --> R2{Approved?}
+    R2 -- feedback --> D1
+    R2 -- approved --> E1[🐝 e2e runs in<br/>sandbox repo]
+    E1 --> E2{E2E passes?}
+    E2 -- fails --> D1
+    E2 -- passes --> M1[🐝 merger squash-merges PR]
+    M1 --> M2{More milestone steps?}
+    M2 -- yes --> D1
+    M2 -- no --> DONE([✅ Project shipped])
+
+    R1 -. gives up after 5 tries .-> PAUSE([⚠ breeze:human])
+    E1 -. gives up after 5 tries .-> PAUSE
+    D1 -. gives up after 5 tries .-> PAUSE
+
+    style H1 fill:#fff3b0
+    style H2 fill:#fff3b0
+    style P2 fill:#fff3b0
+    style DONE fill:#b7e4c7
+    style PAUSE fill:#ffb4a2
+```
 
 ## How it works
 
-1. You open a **design-doc issue** describing what you want built.
-2. A cron (launchd) fires `scripts/tick.sh` every 15 minutes.
+1. You open a **design-doc issue** describing what you want built; tick the "design finalized" checkbox when ready.
+2. A cron (launchd) fires `scripts/tick.sh` every 5 minutes (default).
 3. The tick checks: is an agent already running locally? If yes, exit.
 4. Otherwise it scans the repo for open issues/PRs without a fresh `breeze:wip` claim and picks the oldest one.
-5. It claims the item (label + timestamp comment), spawns an agent, and exits.
+5. It claims the item (adds `breeze:wip` label), spawns an agent, and exits.
 6. The agent works the item to completion, then removes its claim.
 7. When nothing is left open, the tick exits quietly. The project is finalized.
 
@@ -37,7 +69,7 @@ To prevent label churn, `breeze:wip` is kept when agents hand off work. The next
 
 ## Cron
 
-`launchd/com.serenakeyitan.git-bee.plist` — installs `scripts/tick.sh` as a 15-minute launch agent. Install with:
+`launchd/com.serenakeyitan.git-bee.plist` — installs `scripts/tick.sh` as a 5-minute launch agent (default). Install with:
 
 ```bash
 cp launchd/com.serenakeyitan.git-bee.plist ~/Library/LaunchAgents/
