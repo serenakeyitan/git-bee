@@ -6,34 +6,53 @@ An autonomous agent that buzzes through GitHub issues on a schedule, picks up un
 
 ## Flow
 
-```mermaid
-flowchart TD
-    H1([👤 Human opens design-doc issue]) --> H2{Human ticks<br/>design finalized?}
-    H2 -- no --> H1
-    H2 -- yes --> P1[🐝 drafter appends<br/>milestone plan to issue]
-    P1 --> P2{Human ticks<br/>plan finalized?}
-    P2 -- no --> P1
-    P2 -- yes --> D1[🐝 drafter opens<br/>implementation PR]
-    D1 --> R1[🐝 reviewer reviews PR]
-    R1 --> R2{Approved?}
-    R2 -- feedback --> D1
-    R2 -- approved --> E1[🐝 e2e runs in<br/>sandbox repo]
-    E1 --> E2{E2E passes?}
-    E2 -- fails --> D1
-    E2 -- passes --> M1[🐝 merger squash-merges PR]
-    M1 --> M2{More milestone steps?}
-    M2 -- yes --> D1
-    M2 -- no --> DONE([✅ Project shipped])
+```text
+  👤 human opens design-doc issue
+          │
+          ▼
+  ┌───────────────────────┐
+  │ design finalized? ────┼─── no ──► human edits issue ──┐
+  └───────┬───────────────┘                               │
+          │ yes                                           │
+          ▼                                               │
+  🐝 drafter appends milestone plan to issue              │
+          │                                               │
+          ▼                                               │
+  ┌───────────────────────┐                               │
+  │ plan finalized?   ────┼─── no ──► drafter revises ────┤
+  └───────┬───────────────┘                               │
+          │ yes                                           │
+          ▼                                               │
+  🐝 drafter opens implementation PR ◄────────────────────┘
+          │                          ▲
+          ▼                          │
+  🐝 reviewer reviews PR             │
+          │                          │
+          ▼                          │
+  ┌───────────────────────┐          │
+  │ approved?         ────┼── no ────┘  (drafter addresses feedback)
+  └───────┬───────────────┘
+          │ yes
+          ▼
+  🐝 e2e runs in sandbox repo
+          │
+          ▼
+  ┌───────────────────────┐
+  │ E2E passes?       ────┼── no ────► drafter fixes, re-enters loop
+  └───────┬───────────────┘
+          │ yes
+          ▼
+  🐝 merger squash-merges PR
+          │
+          ▼
+  ┌───────────────────────┐
+  │ more milestone steps? ┼── yes ──► back to drafter (next PR)
+  └───────┬───────────────┘
+          │ no
+          ▼
+      ✅ project shipped
 
-    R1 -. gives up after 5 tries .-> PAUSE([⚠ breeze:human])
-    E1 -. gives up after 5 tries .-> PAUSE
-    D1 -. gives up after 5 tries .-> PAUSE
-
-    style H1 fill:#fff3b0
-    style H2 fill:#fff3b0
-    style P2 fill:#fff3b0
-    style DONE fill:#b7e4c7
-    style PAUSE fill:#ffb4a2
+  Any agent gives up after 5 tries → ⚠ breeze:human (paused for human)
 ```
 
 ## How it works
