@@ -15,22 +15,24 @@ An autonomous agent that buzzes through GitHub issues on a schedule, picks up un
   └───────┬───────────────┘                               │
           │ yes                                           │
           ▼                                               │
-  🐝 drafter appends milestone plan to issue              │
-          │                                               │
-          ▼                                               │
-  ┌───────────────────────┐                               │
-  │ plan finalized?   ────┼─── no ──► drafter revises ────┤
-  └───────┬───────────────┘                               │
-          │ yes                                           │
-          ▼                                               │
-  🐝 drafter opens implementation PR ◄────────────────────┘
+  🐝 drafter appends milestone plan to issue ◄────────────┘
+          │                                      ▲
+          ▼                                      │
+  ┌───────────────────────┐                      │
+  │ plan finalized?   ────┼── no ──► human edits ┤
+  │                       │          (drafter    │
+  │                       │           re-plans)  │
+  └───────┬───────────────┘                      │
+          │ yes                                  │
+          ▼                                      │
+  🐝 drafter opens implementation PR ◄───────────┘
           │                          ▲
           ▼                          │
   🐝 reviewer reviews PR             │
           │                          │
           ▼                          │
   ┌───────────────────────┐          │
-  │ approved?         ────┼── no ────┘  (drafter addresses feedback)
+  │ approved?         ────┼── no ────┘ (drafter addresses feedback)
   └───────┬───────────────┘
           │ yes
           ▼
@@ -38,7 +40,7 @@ An autonomous agent that buzzes through GitHub issues on a schedule, picks up un
           │
           ▼
   ┌───────────────────────┐
-  │ E2E passes?       ────┼── no ────► drafter fixes, re-enters loop
+  │ E2E passes?       ────┼── no ──► drafter fixes, re-enters loop
   └───────┬───────────────┘
           │ yes
           ▼
@@ -52,7 +54,26 @@ An autonomous agent that buzzes through GitHub issues on a schedule, picks up un
           ▼
       ✅ project shipped
 
-  Any agent gives up after 5 tries → ⚠ breeze:human (paused for human)
+
+  Pause paths (any agent can exit the loop by elevating to human):
+
+  🐝 <agent> stuck (5 failed tries, ambiguous design, external blocker)
+          │
+          ▼
+  runs `bee pause <n> "<reason>"` which atomically:
+    1. adds `breeze:human` label to the issue/PR
+    2. posts a **<role>: paused** comment with the reason
+    3. removes the agent's `breeze:wip` claim
+    4. exits cleanly
+          │
+          ▼
+  👤 human reads comment, unblocks by one of:
+    • edits the issue/PR to resolve the ambiguity
+    • removes `breeze:human` to hand back to agents
+    • comments with guidance and removes the label
+          │
+          ▼
+  next tick re-dispatches an agent on the same item
 ```
 
 ## How it works
