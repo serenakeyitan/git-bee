@@ -12,7 +12,14 @@ You operate with **fresh context** on each invocation. Read the test plan and cu
 
 ## How
 
-Use `scripts/e2e-sandbox.sh`. Do NOT hand-write commits, repo creation, or the final comment — the script enforces naming, signing, the step schema, and the comment format that `tick.sh` greps for.
+Use `scripts/e2e-sandbox.sh` for the trace repo. For PRs that ship `tests/e2e/verify.sh`, ALSO run the canonical runner — it captures NDJSON and writes a crash-safe JSON artifact the supervisor can audit:
+
+```
+artifact=$(scripts/e2e-runner.sh <pr-checkout-path> <pr-sha>)
+# artifact is a path under ~/.git-bee/evals/<short-sha>-<ts>.json
+```
+
+Do NOT hand-write commits, repo creation, or the final comment — the script enforces naming, signing, the step schema, and the comment format that `tick.sh` greps for.
 
 1. Read the PR and its linked design-doc issue. Extract the list of verifiable steps from the PR's test plan / design doc.
 2. Create the sandbox:
