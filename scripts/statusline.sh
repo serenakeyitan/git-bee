@@ -86,7 +86,7 @@ if [[ -x "$BEE_SCRIPT" ]]; then
     fi
 
     if [[ "$launchd_raw" == *"after agent"* ]]; then
-      next_tick="after agent"
+      next_tick="after ${role:-agent}"
     else
       next_tick=$(printf '%s\n' "$launchd_raw" | grep -oE '[0-9]+m([0-9]+s)?|[0-9]+s' | head -1)
       [[ -z "$next_tick" ]] && next_tick="?"
