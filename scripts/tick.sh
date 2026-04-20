@@ -140,6 +140,19 @@ pick_target() {
     if echo "$open_pr_bodies" | grep -qiE "(fixes|closes|resolves)[[:space:]]+#${n}\b"; then
       continue
     fi
+    # Mechanical finalization-gate check (design-doc issues only).
+    # Exit 0 = gate open, 1 = closed, 2 = ticked by non-owner, 3 = not a design doc.
+    # We silently skip (1) and (2); (3) means the gate doesn't apply and we dispatch.
+    if [[ -x "$HERE/gate-check.sh" ]]; then
+      set +e
+      "$HERE/gate-check.sh" "$REPO" "$n" >/dev/null 2>&1
+      gate_rc=$?
+      set -e
+      if [[ "$gate_rc" == "1" || "$gate_rc" == "2" ]]; then
+        log "skip: #$n gate-check rc=$gate_rc (closed or non-owner tick)"
+        continue
+      fi
+    fi
     echo "drafter $n"
     return
   done
@@ -171,7 +184,11 @@ release_all() {
   claim_release "$REPO" "$number" "$agent_id" 2>/dev/null || true
   rm -f "$LOCK"
 }
-trap release_all EXIT
+# EXIT fires for normal and non-zero exits. Trap SIGINT/TERM/HUP explicitly so
+# a Ctrl-C or launchd stop doesn't orphan `breeze:wip` + the PID lock; SIGKILL
+# can't be trapped (stale claims then clear on the next tick via
+# claim_check's TTL path).
+trap release_all EXIT INT TERM HUP
 
 role_prompt_file="$REPO_ROOT/agents/${kind}.md"
 if [[ ! -f "$role_prompt_file" ]]; then

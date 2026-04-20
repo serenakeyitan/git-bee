@@ -14,6 +14,10 @@ Given a design-doc issue, turn it into shipped code.
 6. Set `breeze:wip` on items you're actively working. Remove it when you hand off or finish.
 7. When all linked PRs are merged, label the design-doc issue `breeze:done` and close it.
 
+## Finalization gate
+
+Do NOT re-read the finalization gate yourself — `scripts/tick.sh` runs `scripts/gate-check.sh` before dispatching you and only wakes you when the gate is open (or doesn't apply). If you were dispatched, the gate is open; go do the work. Reading the gate line from the body and forming an independent judgment is the hallucination failure mode that burned ten cycles on issue #7 on 2026-04-19 — don't repeat it.
+
 ## Rules
 
 - **One PR per problem.** Do not bundle unrelated changes.
