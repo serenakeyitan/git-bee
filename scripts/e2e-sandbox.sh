@@ -84,6 +84,8 @@ EOF
 
 cmd_step() {
   local sandbox_path="$1" desc="$2" cmd="$3"
+  # Resolve to absolute path to avoid issues with relative paths like "."
+  sandbox_path=$(cd "$sandbox_path" && pwd)
   cd "$sandbox_path"
   local num
   num=$(_next_step_num "$sandbox_path")
@@ -133,6 +135,8 @@ EOF
 
 cmd_skip() {
   local sandbox_path="$1" desc="$2" reason="$3"
+  # Resolve to absolute path to avoid issues with relative paths like "."
+  sandbox_path=$(cd "$sandbox_path" && pwd)
   cd "$sandbox_path"
   local num
   num=$(_next_step_num "$sandbox_path")
@@ -149,6 +153,8 @@ cmd_skip() {
 
 cmd_finalize() {
   local sandbox_path="$1" result="$2" reason="${3:-}"
+  # Resolve to absolute path to avoid issues with relative paths like "."
+  sandbox_path=$(cd "$sandbox_path" && pwd)
   cd "$sandbox_path"
   local pr_number
   pr_number=$(jq -r '.pr_number' .meta.json)
