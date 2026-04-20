@@ -106,6 +106,7 @@ To prevent label churn, `breeze:wip` is kept when agents hand off work. The next
 - [`agents/reviewer.md`](agents/reviewer.md) — Reviews implementation PRs. Normal prose review comments. Focus: does the code match the design, security, obvious implementation issues.
 - [`agents/e2e.md`](agents/e2e.md) — Runs E2E for a PR in a sandbox repo. Commits each step as its own commit; the Git log is the test trace.
 - [`agents/merger.md`](agents/merger.md) — Merges approved PRs with passing E2E; closes linked issues with `breeze:done`.
+- [`agents/auditor.md`](agents/auditor.md) — Fresh-context audit of multi-PR design-doc coverage. Runs when every PR in a doc's `## Milestone plan` is merged; closes the umbrella only if all coverage checks pass, else labels `breeze:human`.
 
 ## Cron
 

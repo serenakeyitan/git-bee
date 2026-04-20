@@ -198,6 +198,33 @@ pick_target() {
 
         # Check if plan confirmation gate is checked
         if echo "$issue_body" | grep -q "^- \[x\] \*\*plan confirmed"; then
+          # If every PR number enumerated in the milestone plan is merged, route
+          # to the auditor. Otherwise continue with drafter.
+          local plan_prs
+          plan_prs=$(echo "$issue_body" | awk '/^## Milestone plan/,/^## /' | \
+            grep -oE '^### PR [0-9]+' | grep -oE '[0-9]+' | sort -u)
+          if [[ -n "$plan_prs" ]]; then
+            local all_merged=1
+            local any_pr=0
+            while IFS= read -r pr_ref; do
+              [[ -z "$pr_ref" ]] && continue
+              any_pr=1
+              # Look for a merged PR whose body contains "PR <ref>" heading or
+              # whose title starts with "PR <ref>". We approximate by checking
+              # that SOME merged PR references this milestone slot via its
+              # linked issue body — cheap heuristic: scan closed PRs' titles.
+              local slot_hit
+              slot_hit=$(gh pr list --repo "$REPO" --state merged --search "PR $pr_ref in:title" --json number --jq 'length' 2>/dev/null || echo 0)
+              if [[ "$slot_hit" == "0" ]]; then
+                all_merged=0
+                break
+              fi
+            done <<< "$plan_prs"
+            if [[ "$any_pr" == "1" && "$all_merged" == "1" ]]; then
+              echo "auditor $n"
+              return
+            fi
+          fi
           # Plan is confirmed, proceed to drafter
           echo "drafter $n"
           return
