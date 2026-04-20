@@ -41,7 +41,6 @@ Usage:
   bee help               Show help (this text)
   bee status             Print a terse three-section status block
   bee status --json      Same data, JSON-encoded
-  bee pause <n> <reason> Request human help on issue/PR #n
 
 Exit codes:
   0  agent idle or running cleanly
@@ -376,90 +375,11 @@ cmd_status() {
   exit 0
 }
 
-cmd_pause() {
-  # bee pause <n> <reason>
-  local n="${1:-}"
-  local reason="${2:-}"
-
-  # Validate arguments
-  if [[ -z "$n" ]]; then
-    echo "bee pause: missing issue/PR number" >&2
-    usage >&2
-    exit 2
-  fi
-
-  if ! [[ "$n" =~ ^[0-9]+$ ]]; then
-    echo "bee pause: invalid number: $n" >&2
-    usage >&2
-    exit 2
-  fi
-
-  if [[ -z "$reason" ]]; then
-    echo "bee pause: missing reason" >&2
-    usage >&2
-    exit 2
-  fi
-
-  # Check if the item exists
-  local item_type=""
-  if gh issue view "$n" --repo "$REPO" &>/dev/null; then
-    item_type="issue"
-  elif gh pr view "$n" --repo "$REPO" &>/dev/null; then
-    item_type="pr"
-  else
-    echo "bee pause: no issue or PR #$n found in $REPO" >&2
-    exit 2
-  fi
-
-  # Add breeze:human label
-  if [[ "$item_type" == "issue" ]]; then
-    gh issue edit "$n" --repo "$REPO" --add-label "breeze:human" || {
-      echo "bee pause: failed to add breeze:human label to issue #$n" >&2
-      exit 2
-    }
-  else
-    gh pr edit "$n" --repo "$REPO" --add-label "breeze:human" || {
-      echo "bee pause: failed to add breeze:human label to PR #$n" >&2
-      exit 2
-    }
-  fi
-
-  # Post explanatory comment
-  local comment="🛑 **Agent needs human help**
-
-Reason: $reason
-
-The agent has labeled this $item_type \`breeze:human\` and is pausing work. Please review and provide assistance."
-
-  if [[ "$item_type" == "issue" ]]; then
-    gh issue comment "$n" --repo "$REPO" --body "$comment" || {
-      echo "bee pause: failed to post comment on issue #$n" >&2
-      exit 2
-    }
-  else
-    gh pr comment "$n" --repo "$REPO" --body "$comment" || {
-      echo "bee pause: failed to post comment on PR #$n" >&2
-      exit 2
-    }
-  fi
-
-  # Remove breeze:wip claim if present
-  if [[ "$item_type" == "issue" ]]; then
-    gh issue edit "$n" --repo "$REPO" --remove-label "breeze:wip" 2>/dev/null || true
-  else
-    gh pr edit "$n" --repo "$REPO" --remove-label "breeze:wip" 2>/dev/null || true
-  fi
-
-  echo "bee pause: labeled #$n as breeze:human and posted comment"
-  exit 0
-}
-
 main() {
   local cmd="${1:-help}"
   shift || true
   case "$cmd" in
     status)       cmd_status "$@" ;;
-    pause)        cmd_pause "$@" ;;
     help|-h|--help) usage ;;
     *) echo "bee: unknown command: $cmd" >&2; usage >&2; exit 2 ;;
   esac
