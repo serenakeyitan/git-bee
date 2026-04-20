@@ -1,30 +1,66 @@
 #!/usr/bin/env bash
-# git-bee E2E sandbox: creates a throwaway repo, commits each step as its
-# own SSH-signed commit, and the Git log IS the test trace.
+# git-bee E2E sandbox: consolidated trace repo.
+#
+# Every PR's E2E run lives as a branch `trace/<short-sha>` in a single
+# canonical repo `serenakeyitan/git-bee-e2e`. On finalize, an immutable
+# annotated tag `trace-<short-sha>-<unix-ts>` is pushed and the branch
+# is deleted. Tags preserve history; branches are cleaned up after 30d.
 #
 # Usage:
 #   scripts/e2e-sandbox.sh create <pr-number>
-#     → creates serenakeyitan/git-bee-e2e-<pr-sha> as a private repo,
-#       clones locally under /tmp, prints the path + URL
+#     → ensures canonical repo exists, creates orphan branch
+#       trace/<short-sha> with step-00 bootstrap, prints local worktree path
 #
-#   scripts/e2e-sandbox.sh step <sandbox-path> "<step description>" "<cmd>"
-#     → runs <cmd>, commits stdout/stderr/exit-code as step-NN,
-#       fails fast if the command fails unless STEP_ALLOW_FAIL=1
+#   scripts/e2e-sandbox.sh step <sandbox-path> "<desc>" "<cmd>"
+#     → runs <cmd>, commits stdout/stderr/exit-code as step-NN.
+#       Fails fast unless STEP_ALLOW_FAIL=1.
 #
-#   scripts/e2e-sandbox.sh skip <sandbox-path> "<step description>" "<reason>"
+#   scripts/e2e-sandbox.sh skip <sandbox-path> "<desc>" "<reason>"
 #     → commits step-NN as "skipped — reason"
 #
 #   scripts/e2e-sandbox.sh finalize <sandbox-path> <pass|fail> [reason]
-#     → final commit, pushes, archives the repo, posts comment on the PR
+#     → final commit, push branch, create+push tag trace-<sha>-<ts>,
+#       delete branch locally and on remote, post PR comment linking the tag.
 #
-# Every commit is SSH-signed. The commit message contains the full stdout,
-# stderr, and exit code, making the log independently auditable.
+#   scripts/e2e-sandbox.sh cleanup [days]
+#     → prunes trace/* branches older than <days> (default 30) from the
+#       canonical remote. Tags are never touched.
 
 set -euo pipefail
 
 UPSTREAM_REPO="serenakeyitan/git-bee"
+TRACE_REPO="serenakeyitan/git-bee-e2e"
+TRACE_REMOTE="https://github.com/${TRACE_REPO}.git"
 E2E_ROOT="/tmp/git-bee-e2e"
 mkdir -p "$E2E_ROOT"
+
+_ensure_trace_repo() {
+  if ! gh repo view "$TRACE_REPO" --json name >/dev/null 2>&1; then
+    gh repo create "$TRACE_REPO" --private \
+      --description "Consolidated E2E traces for git-bee PRs. One branch+tag per run." \
+      --clone=false >/dev/null
+    # Seed main so branches have a base to push against.
+    local seed="$E2E_ROOT/.seed"
+    rm -rf "$seed"
+    mkdir -p "$seed"
+    (
+      cd "$seed"
+      git init -q -b main
+      cat > README.md <<'EOF'
+# git-bee E2E traces
+
+One branch `trace/<short-sha>` per run. On finalize, an annotated tag
+`trace-<short-sha>-<unix-ts>` is pushed and the branch is deleted.
+Tags preserve history permanently; old branches are pruned after 30d.
+EOF
+      git add README.md
+      git -c commit.gpgsign=false commit -q -m "seed: canonical trace repo"
+      git remote add origin "$TRACE_REMOTE"
+      git push -q -u origin main
+    )
+    rm -rf "$seed"
+  fi
+}
 
 _next_step_num() {
   local path="$1"
@@ -38,23 +74,22 @@ cmd_create() {
   local pr_sha
   pr_sha=$(gh pr view "$pr_number" --repo "$UPSTREAM_REPO" --json headRefOid --jq '.headRefOid')
   local short_sha="${pr_sha:0:7}"
-  local sandbox_name="git-bee-e2e-${short_sha}"
-  local sandbox_path="$E2E_ROOT/$sandbox_name"
+  local branch="trace/${short_sha}"
+  local sandbox_path="$E2E_ROOT/${short_sha}"
 
-  if [[ -d "$sandbox_path" ]]; then
+  if [[ -d "$sandbox_path/.git" ]]; then
     echo "sandbox already exists at $sandbox_path" >&2
     echo "$sandbox_path"
     return 0
   fi
 
-  gh repo create "serenakeyitan/$sandbox_name" --private \
-    --description "E2E trace for git-bee PR #${pr_number} @ ${short_sha}" \
-    --clone=false >/dev/null
+  _ensure_trace_repo
 
+  rm -rf "$sandbox_path"
   mkdir -p "$sandbox_path"
   cd "$sandbox_path"
-  git init -q -b main
-  git remote add origin "https://github.com/serenakeyitan/$sandbox_name.git"
+  git init -q -b "$branch"
+  git remote add origin "$TRACE_REMOTE"
   git config --local gpg.format ssh
   git config --local user.signingkey "$HOME/.ssh/id_ed25519.pub"
   git config --local commit.gpgsign true
@@ -66,27 +101,32 @@ Each commit is one E2E step. The Git log is the test trace.
 
 - Upstream PR: https://github.com/${UPSTREAM_REPO}/pull/${pr_number}
 - SHA under test: ${pr_sha}
+- Branch: ${branch}
 EOF
   cat > .meta.json <<EOF
 {
   "pr_number": ${pr_number},
   "pr_sha": "${pr_sha}",
+  "short_sha": "${short_sha}",
+  "branch": "${branch}",
   "upstream": "${UPSTREAM_REPO}",
+  "trace_repo": "${TRACE_REPO}",
   "created_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }
 EOF
   git add -A
-  git commit -q -S -m "step-00 bootstrap sandbox for PR #${pr_number} @ ${short_sha}"
-  git push -q -u origin main
+  git commit -q -S -m "step-00 bootstrap trace for PR #${pr_number} @ ${short_sha}"
+  git push -q -u origin "$branch"
 
   echo "$sandbox_path"
 }
 
 cmd_step() {
   local sandbox_path="$1" desc="$2" cmd="$3"
-  # Resolve to absolute path to avoid issues with relative paths like "."
   sandbox_path=$(cd "$sandbox_path" && pwd)
   cd "$sandbox_path"
+  local branch
+  branch=$(jq -r '.branch' .meta.json)
   local num
   num=$(_next_step_num "$sandbox_path")
   local out err exit_code
@@ -122,7 +162,7 @@ $(head -c 4096 "$err")
 EOF
 )
   git commit -q -S -m "$msg_body"
-  git push -q origin main
+  git push -q origin "$branch"
 
   rm -f "$out" "$err"
 
@@ -135,9 +175,10 @@ EOF
 
 cmd_skip() {
   local sandbox_path="$1" desc="$2" reason="$3"
-  # Resolve to absolute path to avoid issues with relative paths like "."
   sandbox_path=$(cd "$sandbox_path" && pwd)
   cd "$sandbox_path"
+  local branch
+  branch=$(jq -r '.branch' .meta.json)
   local num
   num=$(_next_step_num "$sandbox_path")
   local step_dir="steps/step-${num}"
@@ -147,17 +188,18 @@ cmd_skip() {
   echo "$reason" > "$step_dir/skip-reason"
   git add -A
   git commit -q -S -m "step-${num} skipped — ${desc} — ${reason}"
-  git push -q origin main
+  git push -q origin "$branch"
   echo "step-${num} skipped"
 }
 
 cmd_finalize() {
   local sandbox_path="$1" result="$2" reason="${3:-}"
-  # Resolve to absolute path to avoid issues with relative paths like "."
   sandbox_path=$(cd "$sandbox_path" && pwd)
   cd "$sandbox_path"
-  local pr_number
+  local pr_number short_sha branch
   pr_number=$(jq -r '.pr_number' .meta.json)
+  short_sha=$(jq -r '.short_sha' .meta.json)
+  branch=$(jq -r '.branch' .meta.json)
 
   local msg="final: ${result}"
   [[ -n "$reason" ]] && msg="${msg} — ${reason}"
@@ -171,21 +213,24 @@ See the step-NN commits for the full trace.
 EOF
   git add -A
   git commit -q -S --allow-empty -m "$msg"
-  git push -q origin main
+  git push -q origin "$branch"
 
-  # Archive to prevent future drift
-  local sandbox_name
-  sandbox_name=$(basename "$sandbox_path")
-  gh repo archive "serenakeyitan/$sandbox_name" --yes >/dev/null 2>&1 || true
+  local ts tag
+  ts=$(date -u +%s)
+  tag="trace-${short_sha}-${ts}"
+  git tag -s -a "$tag" -m "E2E trace for PR #${pr_number} @ ${short_sha} — ${result}${reason:+ — $reason}"
+  git push -q origin "$tag"
 
-  # Post back to the implementation PR
-  local sandbox_url="https://github.com/serenakeyitan/$sandbox_name"
+  # Delete branch locally and on remote; tag preserves the history.
+  git push -q origin --delete "$branch" || true
+
+  local tag_url="https://github.com/${TRACE_REPO}/tree/${tag}"
   gh pr comment "$pr_number" --repo "$UPSTREAM_REPO" --body "$(cat <<EOF
 **E2E trace (${result})**
 
-Sandbox: ${sandbox_url}
+Trace: ${tag_url}
 
-Each commit in that repo is one verifiable step; the Git log is the full trace. The final commit records the outcome.
+Each commit at that tag is one verifiable step; the Git log is the full trace. The final commit records the outcome.
 
 $([ "$result" = "fail" ] && echo "Failing reason: ${reason}")
 
@@ -194,7 +239,32 @@ _Posted by git-bee E2E agent._
 EOF
 )" >/dev/null
 
-  echo "finalized ${result}: ${sandbox_url}"
+  echo "finalized ${result}: ${tag_url}"
+}
+
+cmd_cleanup() {
+  local days="${1:-30}"
+  local cutoff
+  cutoff=$(( $(date -u +%s) - days * 86400 ))
+  # List remote trace/* branches with their tip commit dates.
+  local tmpdir
+  tmpdir=$(mktemp -d)
+  (
+    cd "$tmpdir"
+    git init -q
+    git remote add origin "$TRACE_REMOTE"
+    git fetch -q origin "+refs/heads/trace/*:refs/remotes/origin/trace/*"
+    local b ts
+    for ref in $(git for-each-ref --format='%(refname:short)' refs/remotes/origin/trace/); do
+      b="${ref#origin/}"
+      ts=$(git log -1 --format='%ct' "$ref")
+      if (( ts < cutoff )); then
+        echo "pruning $b (age $(( ($(date -u +%s) - ts) / 86400 ))d)"
+        git push -q origin --delete "$b" || true
+      fi
+    done
+  )
+  rm -rf "$tmpdir"
 }
 
 cmd="${1:-}"; shift || true
@@ -203,12 +273,14 @@ case "$cmd" in
   step)     cmd_step "$@" ;;
   skip)     cmd_skip "$@" ;;
   finalize) cmd_finalize "$@" ;;
+  cleanup)  cmd_cleanup "$@" ;;
   *) cat >&2 <<EOF
 usage:
   e2e-sandbox.sh create <pr-number>
   e2e-sandbox.sh step <sandbox-path> "<desc>" "<cmd>"
   e2e-sandbox.sh skip <sandbox-path> "<desc>" "<reason>"
   e2e-sandbox.sh finalize <sandbox-path> <pass|fail> [reason]
+  e2e-sandbox.sh cleanup [days=30]
 EOF
   exit 2 ;;
 esac

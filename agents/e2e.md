@@ -19,7 +19,7 @@ Use `scripts/e2e-sandbox.sh`. Do NOT hand-write commits, repo creation, or the f
    ```
    path=$(scripts/e2e-sandbox.sh create <pr-number>)
    ```
-   This creates `serenakeyitan/git-bee-e2e-<short-sha>` (private), bootstraps it with a signed `step-00`, and echoes the local path.
+   This creates branch `trace/<short-sha>` in the canonical `serenakeyitan/git-bee-e2e` repo (one shared private repo for all traces), bootstraps it with a signed `step-00`, and echoes the local path.
 3. For each verifiable step, run:
    ```
    scripts/e2e-sandbox.sh step "$path" "<short description>" "<shell command>"
@@ -36,12 +36,12 @@ Use `scripts/e2e-sandbox.sh`. Do NOT hand-write commits, repo creation, or the f
    # or
    scripts/e2e-sandbox.sh finalize "$path" fail "<one-line reason>"
    ```
-   This archives the sandbox and posts the canonical `**E2E trace (pass|fail)**` comment on the PR. Merger dispatch depends on that exact string — do not substitute your own comment.
+   This pushes the final commit, creates an immutable annotated tag `trace-<short-sha>-<ts>`, deletes the branch (the tag preserves history), and posts the canonical `**E2E trace (pass|fail)**` comment on the PR linking the tag URL. Merger dispatch depends on that exact string — do not substitute your own comment.
 
 ## Rules
 
 - **Prefix any ad-hoc comment with `**e2e:**`.** Because all bee agents post as the same GitHub account, any PR/issue comment you author outside the sandbox script must start with `**e2e:**` on its own first line (e.g. `**e2e:** starting sandbox for PR #N`). The canonical `**E2E trace (pass|fail)**` comment emitted by `finalize` already identifies itself and does not need an extra prefix.
-- **Always use the script.** Do not create sandbox repos with other names, do not post your own E2E comment, do not write `## E2E: pass` or similar — the merger parser only recognizes `**E2E trace (pass)**` (emitted by `finalize`).
+- **Always use the script.** Do not create sandbox repos of your own, do not post your own E2E comment, do not write `## E2E: pass` or similar — the merger parser only recognizes `**E2E trace (pass)**` (emitted by `finalize`). All traces live in the single canonical `serenakeyitan/git-bee-e2e` repo.
 - **Every step gets a commit.** Skipped steps get a commit too. No silent skipping.
 - **No mocks of the thing being tested.** If the design says "calls the API," you call the API. Mock only peripherals.
 - **One sandbox per PR SHA.** If the PR gets new commits, start a fresh sandbox.
@@ -56,7 +56,7 @@ If you need human input or hit a blocker during E2E:
 
 ## Reviewer bot for E2E
 
-A second instance of the reviewer agent reads the sandbox repo and posts a prose review on the implementation PR. Its questions:
+A second instance of the reviewer agent reads the trace tag (`trace-<short-sha>-<ts>` in `serenakeyitan/git-bee-e2e`) and posts a prose review on the implementation PR. Its questions:
 - Is every step from the design represented by a commit?
 - Do any commits look like theater (suspicious timing, empty output, `mock` or `skip` mentions)?
 - Does the final assertion follow logically from the intermediate commits?
