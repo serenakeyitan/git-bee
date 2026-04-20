@@ -23,6 +23,14 @@ mkdir -p "$LOG_DIR"
 
 log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" | tee -a "$LOG"; }
 
+# Guard 0: credential healthcheck. A tick that runs with expired gh auth
+# produces the same "idle: nothing to do" log line as a finalized project,
+# which silently breaks the loop. Fail loudly and exit instead.
+if ! gh auth status >/dev/null 2>&1; then
+  log "CREDENTIAL EXPIRED — gh auth status failed; skipping tick. Run 'gh auth login'."
+  exit 0
+fi
+
 # Guard 1: local PID lock
 # Runs before the notification scanner so that a running agent blocks scanning
 # too — the scanner makes GitHub API calls we don't want piled on an already-
