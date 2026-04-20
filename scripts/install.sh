@@ -66,42 +66,23 @@ CONFIG_FILE="$HOME/.git-bee/config.json"
 mkdir -p "$(dirname "$CONFIG_FILE")"
 
 if [[ ! -f "$CONFIG_FILE" ]]; then
-  # First-time setup: prompt for scope choice
-  echo ""
-  echo "How should git-bee watch GitHub notifications?"
-  echo "  (e) exclusion — watch all repos you have access to except an exclusion list (brave mode)"
-  echo "  (c) curated — only watch a specific allowlist of repos (experimental mode)"
-  echo ""
-  printf "Choose [e/c]: "
-
-  read -r scope_choice
-  case "$scope_choice" in
-    c|C)
-      cat > "$CONFIG_FILE" <<'EOF'
+  # Safe default: scanner disabled, empty watchlist. User opts in explicitly
+  # via `bee watch add <owner/repo>` once they know which repos they want
+  # agents watching. No interactive prompt — avoids footguns during install.
+  cat > "$CONFIG_FILE" <<'EOF'
 {
-  "scope": "curated",
-  "exclude_repos": [],
-  "include_repos": []
+  "watch": {
+    "enabled": false,
+    "repos": [],
+    "classify_as_needs_fix": ["review_requested", "assign", "mention", "team_mention"],
+    "per_repo_ceiling": 5,
+    "global_ceiling": 20
+  }
 }
 EOF
-      ok "config: curated mode (edit include_repos with: bee config add include_repos <repo>)"
-      ;;
-    *)
-      cat > "$CONFIG_FILE" <<'EOF'
-{
-  "scope": "exclusion",
-  "exclude_repos": [
-    "unispark-inc/paperclip",
-    "unispark-inc/paperclip-context-tree"
-  ],
-  "include_repos": []
-}
-EOF
-      ok "config: exclusion mode with default exclusions"
-      ;;
-  esac
+  ok "config: scanner disabled by default — turn on with 'bee watch add <owner/repo>'"
 else
-  ok "config exists: $CONFIG_FILE"
+  ok "config exists: $CONFIG_FILE (legacy scope fields will be migrated on next tick)"
 fi
 
 # 5. bee CLI on PATH

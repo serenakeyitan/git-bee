@@ -46,6 +46,11 @@ Usage:
   bee config set <key> <value>  Set a configuration value
   bee config add <key> <value>  Add value to list config
   bee config remove <key> <value>  Remove value from list config
+  bee watch list         Show scanner state + watched repos
+  bee watch add <owner/repo>     Add a repo to the scanner's watchlist
+  bee watch remove <owner/repo>  Remove a repo from the watchlist
+  bee watch pause        Disable scanner without losing watchlist
+  bee watch resume       Re-enable scanner
 
 Exit codes:
   0  agent idle or running cleanly
@@ -426,16 +431,19 @@ cmd_config() {
   # Ensure config directory exists
   mkdir -p "$(dirname "$CONFIG_FILE")"
 
-  # Create default config if not exists
+  # Create default config if not exists. New shape:
+  #   watch.enabled = false, watch.repos = []  → scanner is a no-op by default.
+  # User explicitly opts in with `bee watch add <owner/repo>`.
   if [[ ! -f "$CONFIG_FILE" ]]; then
     cat > "$CONFIG_FILE" <<'EOF'
 {
-  "scope": "exclusion",
-  "exclude_repos": [
-    "unispark-inc/paperclip",
-    "unispark-inc/paperclip-context-tree"
-  ],
-  "include_repos": []
+  "watch": {
+    "enabled": false,
+    "repos": [],
+    "classify_as_needs_fix": ["review_requested", "assign", "mention", "team_mention"],
+    "per_repo_ceiling": 5,
+    "global_ceiling": 20
+  }
 }
 EOF
   fi
@@ -519,6 +527,76 @@ EOF
   esac
 }
 
+cmd_watch() {
+  local action="${1:-list}"
+  shift || true
+
+  mkdir -p "$(dirname "$CONFIG_FILE")"
+  # Bootstrap config via cmd_config's default template if missing.
+  if [[ ! -f "$CONFIG_FILE" ]]; then
+    cmd_config get >/dev/null
+  fi
+
+  local repo
+  case "$action" in
+    list)
+      jq -r '
+        .watch as $w
+        | if ($w.enabled // false) then "enabled" else "paused" end
+        | "scanner: " + .
+      ' "$CONFIG_FILE"
+      local count
+      count=$(jq -r '(.watch.repos // []) | length' "$CONFIG_FILE")
+      if (( count == 0 )); then
+        echo "  (no repos — add one with: bee watch add <owner/repo>)"
+      else
+        jq -r '.watch.repos[]' "$CONFIG_FILE" | sed 's/^/  - /'
+      fi
+      ;;
+    add)
+      repo="${1:-}"
+      if [[ -z "$repo" ]] || ! [[ "$repo" =~ ^[^/]+/[^/]+$ ]]; then
+        echo "bee watch add: need owner/repo" >&2
+        exit 2
+      fi
+      jq --arg r "$repo" '
+        .watch //= {enabled: false, repos: []}
+        | .watch.repos //= []
+        | if (.watch.repos | index($r)) then . else .watch.repos += [$r] end
+        | .watch.enabled = true
+      ' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
+      echo "bee watch: added ${repo} (scanner enabled)"
+      ;;
+    remove)
+      repo="${1:-}"
+      if [[ -z "$repo" ]]; then
+        echo "bee watch remove: need owner/repo" >&2
+        exit 2
+      fi
+      jq --arg r "$repo" '
+        .watch //= {enabled: false, repos: []}
+        | .watch.repos = ((.watch.repos // []) - [$r])
+      ' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
+      echo "bee watch: removed ${repo}"
+      ;;
+    pause)
+      jq '.watch.enabled = false' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && \
+        mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
+      echo "bee watch: paused (list preserved)"
+      ;;
+    resume)
+      jq '.watch.enabled = true' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && \
+        mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
+      echo "bee watch: resumed"
+      ;;
+    *)
+      echo "bee watch: unknown action: $action" >&2
+      echo "usage: bee watch add|remove|list|pause|resume [owner/repo]" >&2
+      exit 2
+      ;;
+  esac
+}
+
 main() {
   local cmd="${1:-help}"
   shift || true
@@ -526,6 +604,7 @@ main() {
     status)       cmd_status "$@" ;;
     pause)        cmd_pause "$@" ;;
     config)       cmd_config "$@" ;;
+    watch)        cmd_watch "$@" ;;
     help|-h|--help) usage ;;
     *) echo "bee: unknown command: $cmd" >&2; usage >&2; exit 2 ;;
   esac

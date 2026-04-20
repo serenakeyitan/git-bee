@@ -1,121 +1,130 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # notification-scanner.sh — turns unresolved GitHub notifications into issues
+# on git-bee, but ONLY for repos the user has explicitly opted-in to via
+# `bee watch add`.
 #
-# Part of PR 4 from the phase-gated redesign (issue #7).
+# Redesigned per issue #529. Old shape (`scope: exclusion|curated`) is
+# migrated forward automatically. New shape:
+#   {
+#     "watch": {
+#       "enabled": bool,
+#       "repos": ["owner/name", ...],
+#       "classify_as_needs_fix": ["review_requested", ...],
+#       "per_repo_ceiling": 5,
+#       "global_ceiling": 20
+#     }
+#   }
 #
-# Flow:
-# 1. Get all unread notifications via `gh api notifications`
-# 2. Apply scope filter (exclusion or curated) from config.json
-# 3. Classify each notification (needs-fix vs informational)
-# 4. Dedup against existing source:notification issues
-# 5. Create new issues for needs-fix items not already tracked
+# Safety rails:
+#   - Empty repos list or enabled=false → no-op (safe default).
+#   - Per-repo ceiling: never create more than N issues per repo per tick.
+#   - Global ceiling: never create more than M issues total per tick.
+#   - On ceiling trip: stop and file ONE breeze:human summary issue, no further
+#     creates this tick. The summary asks the human to decide what to do.
+#   - Classifier: only actionable reasons (review_requested, assign, mention,
+#     team_mention) become issues by default. "author"/"comment" are noise.
 
 set -euo pipefail
 
 REPO="${GITHUB_REPOSITORY:-serenakeyitan/git-bee}"
 CONFIG_FILE="$HOME/.git-bee/config.json"
 
-# Load config or use defaults
+# ---- config migration + load ------------------------------------------------
+
+_migrate_if_legacy() {
+    # If config has the old scope-based shape and no `watch` key, map forward:
+    #   scope=curated + include_repos  → watch.repos, watch.enabled=true
+    #   scope=exclusion                 → watch.repos=[], watch.enabled=false
+    # Print a one-time notice to stderr so the user sees what happened.
+    [[ ! -f "$CONFIG_FILE" ]] && return 0
+    local has_legacy has_watch
+    has_legacy=$(jq 'has("scope") or has("include_repos") or has("exclude_repos")' "$CONFIG_FILE" 2>/dev/null || echo "false")
+    has_watch=$(jq 'has("watch")' "$CONFIG_FILE" 2>/dev/null || echo "false")
+    if [[ "$has_legacy" != "true" || "$has_watch" == "true" ]]; then
+        return 0
+    fi
+    echo "notification-scanner: migrating legacy config (scope/{include,exclude}_repos → watch)" >&2
+    jq '
+      . as $in
+      | {
+          watch: {
+            enabled: (($in.scope // "exclusion") == "curated" and (($in.include_repos // []) | length) > 0),
+            repos: ($in.include_repos // []),
+            classify_as_needs_fix: ["review_requested", "assign", "mention", "team_mention"],
+            per_repo_ceiling: 5,
+            global_ceiling: 20
+          }
+        }
+    ' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
+}
+
+_migrate_if_legacy
+
 if [[ -f "$CONFIG_FILE" ]]; then
-    SCOPE=$(jq -r '.scope // "exclusion"' "$CONFIG_FILE")
-    EXCLUDE_REPOS=$(jq -r '.exclude_repos[]? // empty' "$CONFIG_FILE")
-    INCLUDE_REPOS=$(jq -r '.include_repos[]? // empty' "$CONFIG_FILE")
+    WATCH_ENABLED=$(jq -r '.watch.enabled // false' "$CONFIG_FILE")
+    WATCH_REPOS=$(jq -r '(.watch.repos // [])[]' "$CONFIG_FILE" 2>/dev/null || true)
+    NEEDS_FIX_REASONS=$(jq -r '(.watch.classify_as_needs_fix // ["review_requested","assign","mention","team_mention"])[]' "$CONFIG_FILE" 2>/dev/null)
+    PER_REPO_CEILING=$(jq -r '.watch.per_repo_ceiling // 5' "$CONFIG_FILE")
+    GLOBAL_CEILING=$(jq -r '.watch.global_ceiling // 20' "$CONFIG_FILE")
 else
-    SCOPE="exclusion"
-    EXCLUDE_REPOS="unispark-inc/paperclip
-unispark-inc/paperclip-context-tree"
-    INCLUDE_REPOS=""
+    WATCH_ENABLED="false"
+    WATCH_REPOS=""
+    NEEDS_FIX_REASONS="review_requested
+assign
+mention
+team_mention"
+    PER_REPO_CEILING=5
+    GLOBAL_CEILING=20
 fi
 
-# Ensure required labels exist
+if [[ "$WATCH_ENABLED" != "true" ]] || [[ -z "$WATCH_REPOS" ]]; then
+    echo "notification-scanner: disabled or empty watchlist, no-op"
+    exit 0
+fi
+
+# ---- helpers ---------------------------------------------------------------
+
 ensure_labels() {
-    local labels=("source:notification" "priority:high")
+    local labels=("source:notification" "priority:high" "breeze:human")
     for label in "${labels[@]}"; do
-        if ! gh label list --repo "$REPO" --limit 100 | grep -q "^$label"; then
-            echo "Creating label: $label"
+        if ! gh label list --repo "$REPO" --limit 100 2>/dev/null | grep -q "^$label"; then
             gh label create "$label" --repo "$REPO" --force 2>/dev/null || true
         fi
     done
 }
 
-# Check if a repo is in scope based on config
-is_in_scope() {
+is_watched() {
     local repo="$1"
-
-    if [[ "$SCOPE" == "curated" ]]; then
-        # Only process if in include list
-        if [[ -z "$INCLUDE_REPOS" ]]; then
-            return 1  # No includes = nothing in scope
-        fi
-        echo "$INCLUDE_REPOS" | grep -qF "$repo" && return 0
-        return 1
-    else
-        # Process unless in exclude list (exclusion mode)
-        if [[ -z "$EXCLUDE_REPOS" ]]; then
-            return 0  # No excludes = everything in scope
-        fi
-        echo "$EXCLUDE_REPOS" | grep -qF "$repo" && return 1
-        return 0
-    fi
+    while IFS= read -r w; do
+        [[ -z "$w" ]] && continue
+        [[ "$repo" == "$w" ]] && return 0
+    done <<< "$WATCH_REPOS"
+    return 1
 }
 
-# Classify notification type
-classify_notification() {
+is_needs_fix() {
     local reason="$1"
-    local subject_type="$2"
-
-    case "$reason" in
-        "review_requested")
-            echo "needs-fix"
-            ;;
-        "assign"|"mention"|"team_mention")
-            echo "needs-fix"
-            ;;
-        "author"|"comment"|"manual"|"state_change")
-            # These could be needs-fix if on user's own PR/issue
-            echo "needs-fix"
-            ;;
-        *)
-            echo "informational"
-            ;;
-    esac
+    while IFS= read -r r; do
+        [[ -z "$r" ]] && continue
+        [[ "$reason" == "$r" ]] && return 0
+    done <<< "$NEEDS_FIX_REASONS"
+    return 1
 }
 
-# Check if an issue already exists for this notification
 find_existing_issue() {
-    local repo="$1"
-    local number="$2"
-
-    # Search for open issues with source:notification label that reference this PR/issue
+    local repo="$1" number="$2"
     gh issue list --repo "$REPO" \
-        --label "source:notification" \
-        --state open \
+        --label "source:notification" --state open \
         --json number,body \
         --jq ".[] | select(.body | contains(\"$repo#$number\")) | .number" | head -1
 }
 
-# Create or update issue for notification
-create_or_update_issue() {
-    local repo="$1"
-    local number="$2"
-    local type="$3"
-    local reason="$4"
-    local url="$5"
-
-    local existing=$(find_existing_issue "$repo" "$number")
-
-    if [[ -n "$existing" ]]; then
-        # Append comment to existing issue
-        echo "Updating existing issue #$existing for $repo#$number"
-        gh issue comment "$existing" --repo "$REPO" --body "New notification: $reason on $repo#$number
-URL: $url
-Reason: $reason
-Time: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    else
-        # Create new issue
-        echo "Creating new issue for $repo#$number ($reason)"
-        local title="address $reason on $repo#$number"
-        local body="Automated notification tracking
+create_issue() {
+    local repo="$1" number="$2" type="$3" reason="$4" url="$5"
+    local title="address $reason on $repo#$number"
+    local body
+    body=$(cat <<EOF
+Automated notification tracking
 
 **Source:** $repo#$number
 **Type:** $type
@@ -123,67 +132,110 @@ Time: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 **URL:** $url
 **Created:** $(date -u +%Y-%m-%dT%H:%M:%SZ)
 
-This issue was automatically created by git-bee's notification scanner.
-Review and address the notification, then close this issue when done."
-
-        gh issue create --repo "$REPO" \
-            --title "$title" \
-            --body "$body" \
-            --label "source:notification" \
-            --label "priority:high"
-    fi
+This issue was automatically created by the git-bee notification scanner.
+Review and address the notification, then close this issue when done.
+EOF
+)
+    gh issue create --repo "$REPO" \
+        --title "$title" --body "$body" \
+        --label "source:notification" --label "priority:high" >/dev/null
 }
 
-# Main scanner logic
+file_ceiling_breach() {
+    local scope="$1" limit="$2" repo="$3"
+    local title="scanner: ${scope} ceiling hit (${limit}) — watchlist may be too broad"
+    local body
+    body=$(cat <<EOF
+Scanner stopped mid-scan because the ${scope} ceiling of ${limit} was reached${repo:+ on \`$repo\`}.
+
+This usually means one of the watched repos is too noisy for agents to keep up.
+Pick one:
+- \`bee watch remove <owner/repo>\` to drop it
+- raise \`watch.${scope}_ceiling\` in \`~/.git-bee/config.json\`
+- \`bee watch pause\` to stop scanning entirely while you decide
+
+Remove \`breeze:human\` once resolved; next tick will resume scanning.
+EOF
+)
+    gh issue create --repo "$REPO" \
+        --title "$title" --body "$body" \
+        --label "breeze:human" --label "source:notification" >/dev/null 2>&1 || true
+}
+
+# ---- main -----------------------------------------------------------------
+
 main() {
     ensure_labels
 
-    # Get all unread notifications
-    # Note: We intentionally do NOT mark them as read here
-    local notifications=$(gh api notifications --paginate | jq -c '.[]')
-
+    local notifications
+    notifications=$(gh api notifications --paginate 2>/dev/null | jq -c '.[]' || true)
     if [[ -z "$notifications" ]]; then
-        echo "No unread notifications"
+        echo "notification-scanner: no unread notifications"
         return 0
     fi
 
-    echo "$notifications" | while IFS= read -r notification; do
-        local repo=$(echo "$notification" | jq -r '.repository.full_name')
-        local reason=$(echo "$notification" | jq -r '.reason')
-        local subject_type=$(echo "$notification" | jq -r '.subject.type')
-        local subject_title=$(echo "$notification" | jq -r '.subject.title')
-        local subject_url=$(echo "$notification" | jq -r '.subject.url // empty')
-        local thread_id=$(echo "$notification" | jq -r '.id')
+    local global_created=0
+    # bash 3.2-compatible per-repo counter: newline-delimited "repo<TAB>count" lines.
+    local per_repo_counts=""
 
-        # Extract issue/PR number from subject URL if available
-        local number=""
-        if [[ -n "$subject_url" ]]; then
-            number=$(echo "$subject_url" | grep -oE '[0-9]+$' || echo "")
+    _get_repo_count() {
+        local r="$1"
+        printf '%s\n' "$per_repo_counts" | awk -v r="$r" -F '\t' '$1==r {print $2; exit}'
+    }
+    _set_repo_count() {
+        local r="$1" c="$2"
+        per_repo_counts=$(printf '%s\n' "$per_repo_counts" | awk -v r="$r" -F '\t' '$1!=r')
+        per_repo_counts="${per_repo_counts}
+${r}	${c}"
+    }
+
+    while IFS= read -r notification; do
+        [[ -z "$notification" ]] && continue
+
+        local repo reason subject_type subject_url number
+        repo=$(echo "$notification" | jq -r '.repository.full_name')
+        reason=$(echo "$notification" | jq -r '.reason')
+        subject_type=$(echo "$notification" | jq -r '.subject.type')
+        subject_url=$(echo "$notification" | jq -r '.subject.url // empty')
+        number=""
+        [[ -n "$subject_url" ]] && number=$(echo "$subject_url" | grep -oE '[0-9]+$' || echo "")
+
+        is_watched "$repo" || continue
+        is_needs_fix "$reason" || continue
+        [[ -z "$number" ]] && continue
+
+        # Dedup: already tracked → skip silently.
+        local existing
+        existing=$(find_existing_issue "$repo" "$number")
+        [[ -n "$existing" ]] && continue
+
+        # Global ceiling
+        if (( global_created >= GLOBAL_CEILING )); then
+            echo "notification-scanner: hit global ceiling ($GLOBAL_CEILING), filing summary and stopping"
+            file_ceiling_breach "global" "$GLOBAL_CEILING" ""
+            break
         fi
 
-        # Check if repo is in scope
-        if ! is_in_scope "$repo"; then
-            echo "Skipping out-of-scope repo: $repo"
+        # Per-repo ceiling
+        local repo_count
+        repo_count=$(_get_repo_count "$repo")
+        [[ -z "$repo_count" ]] && repo_count=0
+        if (( repo_count >= PER_REPO_CEILING )); then
+            if (( repo_count == PER_REPO_CEILING )); then
+                echo "notification-scanner: hit per-repo ceiling ($PER_REPO_CEILING) on $repo, filing summary"
+                file_ceiling_breach "per_repo" "$PER_REPO_CEILING" "$repo"
+                _set_repo_count "$repo" "$((repo_count + 1))"
+            fi
             continue
         fi
 
-        # Classify the notification
-        local classification=$(classify_notification "$reason" "$subject_type")
+        create_issue "$repo" "$number" "$subject_type" "$reason" "${subject_url:-unknown}"
+        global_created=$((global_created + 1))
+        _set_repo_count "$repo" "$((repo_count + 1))"
+        echo "notification-scanner: created issue for $repo#$number ($reason)"
+    done <<< "$notifications"
 
-        if [[ "$classification" == "needs-fix" ]]; then
-            if [[ -n "$number" ]]; then
-                # Create or update issue for this notification
-                create_or_update_issue "$repo" "$number" "$subject_type" "$reason" "${subject_url:-unknown}"
-            else
-                echo "Warning: Could not extract issue/PR number for $repo notification"
-            fi
-        else
-            echo "Skipping informational notification: $reason on $repo"
-        fi
-
-        # Important: Do NOT mark the notification as read
-        # The design spec explicitly says not to call PATCH /notifications/threads/<id>
-    done
+    echo "notification-scanner: done ($global_created created this tick)"
 }
 
 main "$@"

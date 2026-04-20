@@ -23,14 +23,11 @@ mkdir -p "$LOG_DIR"
 
 log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" | tee -a "$LOG"; }
 
-# Run notification scanner before routing
-# This turns unresolved GitHub notifications into issues
-if [[ -x "$HERE/notification-scanner.sh" ]]; then
-  log "running notification scanner"
-  "$HERE/notification-scanner.sh" 2>&1 | tee -a "$LOG" || log "notification scanner failed (rc=$?)"
-fi
-
 # Guard 1: local PID lock
+# Runs before the notification scanner so that a running agent blocks scanning
+# too — the scanner makes GitHub API calls we don't want piled on an already-
+# busy tick, and any issues it creates would sit behind the current agent's
+# claim anyway.
 if [[ -f "$LOCK" ]]; then
   pid=$(cat "$LOCK" 2>/dev/null || echo "")
   if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
@@ -39,6 +36,13 @@ if [[ -f "$LOCK" ]]; then
   fi
   log "stale lock (pid=$pid), removing"
   rm -f "$LOCK"
+fi
+
+# Run notification scanner after the lock guard. No-op by default (empty
+# watchlist); only fires for repos the user explicitly added via `bee watch`.
+if [[ -x "$HERE/notification-scanner.sh" ]]; then
+  log "running notification scanner"
+  "$HERE/notification-scanner.sh" 2>&1 | tee -a "$LOG" || log "notification scanner failed (rc=$?)"
 fi
 
 # Guard 2: find work
