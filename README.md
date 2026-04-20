@@ -20,11 +20,11 @@ Only three, matching the breeze/gardener convention. No `breeze:new` — absence
 
 | Label | Meaning | Who sets |
 |---|---|---|
-| `breeze:wip` | An agent has claimed this item | The claiming agent (paired with a `<!-- breeze:claimed-at=... -->` comment) |
+| `breeze:wip` | An agent has claimed this item | The claiming agent |
 | `breeze:done` | All work for this item is complete | The agent, when closing |
 | `breeze:human` | Agent gave up after N attempts, needs human | The responder agent, per breeze#12 convention (N=5) |
 
-Stale `breeze:wip` = timestamp older than 2 hours. Any agent may take over a stale claim.
+Stale `breeze:wip` = labeled event timestamp older than 2 hours. Any agent may take over a stale claim.
 
 ## Agent roles
 
