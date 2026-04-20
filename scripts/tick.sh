@@ -67,7 +67,23 @@ pick_target() {
     return
   fi
 
-  # 1b. Approved PRs without an E2E trace yet → E2E.
+  # 1b. PRs with E2E trace that needs supervisor classification
+  local traced_prs
+  traced_prs=$(echo "$pr_basics" | jq -r '
+    .[]
+    | select(.labels | map(.name) | index("breeze:wip") | not)
+    | select(.labels | map(.name) | index("breeze:human") | not)
+    | select(any(.comments[]?.body // ""; contains("**E2E trace")))
+    | select(any(.comments[]?.body // ""; contains("**E2E trace (pass)**")) | not)
+    | select(any(.comments[]?.body // ""; contains("**e2e-supervisor:")) | not)
+    | .number
+  ' 2>/dev/null || true)
+  if [[ -n "$traced_prs" ]]; then
+    echo "e2e-supervisor $(echo "$traced_prs" | head -1)"
+    return
+  fi
+
+  # 1c. Approved PRs without an E2E trace yet → E2E.
   local approved_prs
   approved_prs=$(echo "$pr_basics" | jq -r '
     .[]
@@ -151,6 +167,34 @@ pick_target() {
       if [[ "$gate_rc" == "1" || "$gate_rc" == "2" ]]; then
         log "skip: #$n gate-check rc=$gate_rc (closed or non-owner tick)"
         continue
+      fi
+      # If gate is open (rc=0), check for Phase 2 routing
+      if [[ "$gate_rc" == "0" ]]; then
+        local issue_body
+        issue_body=$(gh issue view "$n" --repo "$REPO" --json body --jq '.body' 2>/dev/null || echo "")
+
+        # Check for milestone plan
+        if ! echo "$issue_body" | grep -q "^## Milestone plan"; then
+          echo "planner $n"
+          return
+        fi
+
+        # Check for E2E test plan
+        if ! echo "$issue_body" | grep -q "^## E2E test plan"; then
+          echo "e2e-designer $n"
+          return
+        fi
+
+        # Check if plan confirmation gate is checked
+        if echo "$issue_body" | grep -q "^- \[x\] \*\*plan confirmed"; then
+          # Plan is confirmed, proceed to drafter
+          echo "drafter $n"
+          return
+        else
+          # Has test plan but needs supervisor review
+          echo "e2e-supervisor $n"
+          return
+        fi
       fi
     fi
     echo "drafter $n"

@@ -18,6 +18,10 @@ Given a design-doc issue, turn it into shipped code.
 
 Do NOT re-read the finalization gate yourself — `scripts/tick.sh` runs `scripts/gate-check.sh` before dispatching you and only wakes you when the gate is open (or doesn't apply). If you were dispatched, the gate is open; go do the work. Reading the gate line from the body and forming an independent judgment is the hallucination failure mode that burned ten cycles on issue #7 on 2026-04-19 — don't repeat it.
 
+## Accumulated context rule
+
+You operate with **accumulated context** — continue prior work. Read the full PR thread, all prior feedback, all prior commits. You are executing a continuing task, not forming independent judgment. Build on what was done before.
+
 ## Rules
 
 - **Prefix every comment you author with a role header.** Because all bee agents post as the same GitHub account, your comments must be self-identifying. Start every issue comment, PR description, and PR comment with `**drafter:**` (or `**drafter: done**` when handing off, `**drafter: plan**` when posting a milestone plan, `**drafter: design**` when posting a design draft) on its own first line, then a blank line, then the body. Does not apply to commit messages or code itself.
