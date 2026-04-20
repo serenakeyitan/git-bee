@@ -87,9 +87,11 @@ if [[ -x "$BEE_SCRIPT" ]]; then
 
     if [[ "$launchd_raw" == *"after agent"* ]]; then
       next_tick="after ${role:-agent}"
+    elif [[ "$launchd_raw" == *"not installed"* ]]; then
+      next_tick="launchd off"
     else
       next_tick=$(printf '%s\n' "$launchd_raw" | grep -oE '[0-9]+m([0-9]+s)?|[0-9]+s' | head -1)
-      [[ -z "$next_tick" ]] && next_tick="?"
+      [[ -z "$next_tick" ]] && next_tick="pending"
     fi
 
     # Paused count (breeze:human-labeled items), cached.
