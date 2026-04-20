@@ -97,6 +97,10 @@ claim_acquire() {
 }
 
 claim_release() {
+  # Callers (tick.sh) wire this into `trap ... EXIT INT TERM HUP` so that a
+  # Ctrl-C, launchd unload, or non-zero exit still drops `breeze:wip`. SIGKILL
+  # can't be trapped — stale claims from that path are cleared by the next
+  # tick via claim_check's TTL check (CLAIM_TTL_SECONDS, default 2h).
   local repo="$1" number="$2" agent="$3"
   # Only release if the claim is ours. Prevents one agent dropping another's lock.
   if ! claim_is_mine "$repo" "$number" "$agent"; then
