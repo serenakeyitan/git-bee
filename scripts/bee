@@ -41,6 +41,7 @@ Usage:
   bee help               Show help (this text)
   bee status             Print a terse three-section status block
   bee status --json      Same data, JSON-encoded
+  bee pause <n> <reason> Label issue/PR #n with breeze:human and comment
 
 Exit codes:
   0  agent idle or running cleanly
@@ -372,11 +373,47 @@ cmd_status() {
   exit 0
 }
 
+cmd_pause() {
+  local number="${1:-}"
+  local reason="${2:-}"
+
+  if [[ -z "$number" ]] || [[ -z "$reason" ]]; then
+    echo "bee pause: missing arguments" >&2
+    echo "usage: bee pause <n> <reason>" >&2
+    exit 2
+  fi
+
+  if ! [[ "$number" =~ ^[0-9]+$ ]]; then
+    echo "bee pause: invalid issue/PR number: $number" >&2
+    exit 2
+  fi
+
+  # Add breeze:human label
+  gh issue edit "$number" --repo "$REPO" --add-label "breeze:human" >/dev/null
+
+  # Post comment explaining why human help is needed
+  gh issue comment "$number" --repo "$REPO" --body "$(cat <<EOF
+**Needs human assistance**
+
+${reason}
+
+---
+_Agent paused and labeled breeze:human._
+EOF
+)" >/dev/null
+
+  # Remove breeze:wip if present (agent is giving up claim)
+  gh issue edit "$number" --repo "$REPO" --remove-label "breeze:wip" >/dev/null 2>&1 || true
+
+  echo "bee pause: labeled #${number} with breeze:human"
+}
+
 main() {
   local cmd="${1:-help}"
   shift || true
   case "$cmd" in
     status)       cmd_status "$@" ;;
+    pause)        cmd_pause "$@" ;;
     help|-h|--help) usage ;;
     *) echo "bee: unknown command: $cmd" >&2; usage >&2; exit 2 ;;
   esac

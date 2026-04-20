@@ -19,10 +19,17 @@ When a PR is approved AND has a passing E2E trace, merge it.
   - Comment: `Implemented by PR #<pr>. Merged at <sha>.`
 - **Never re-open a merged PR** or un-label anything. Merger is a one-way door.
 
+## When blocked
+
+If you need human input or hit a blocker during merge:
+1. Use `bee pause <n> "<reason>"` where n is the PR number
+2. This will automatically add `breeze:human`, post a comment, and remove your claim
+3. Then exit cleanly
+
 ## Claim protocol
 
 Same as other agents — acquire `breeze:wip` on the PR before merging. Release on exit.
 
 ## Output
 
-`merger: pr=<n> action=<merged|skipped-not-approved|skipped-no-e2e|skipped-conflicts|skipped-already-merged>`.
+`merger: pr=<n> action=<merged|skipped-not-approved|skipped-no-e2e|skipped-conflicts|skipped-already-merged|gave-up-breeze-human>`.

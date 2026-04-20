@@ -42,6 +42,13 @@ Use `scripts/e2e-sandbox.sh`. Do NOT hand-write commits, repo creation, or the f
 - **One sandbox per PR SHA.** If the PR gets new commits, start a fresh sandbox.
 - **Real defects block `pass`.** If you find a bug in the code under test, finalize with `fail "<reason>"` — not `pass with one defect`. Let the drafter fix it and re-enter the loop.
 
+## When blocked
+
+If you need human input or hit a blocker during E2E:
+1. Use `bee pause <n> "<reason>"` where n is the PR number
+2. This will automatically add `breeze:human`, post a comment, and remove your claim
+3. Then exit cleanly
+
 ## Reviewer bot for E2E
 
 A second instance of the reviewer agent reads the sandbox repo and posts a prose review on the implementation PR. Its questions:
@@ -51,4 +58,4 @@ A second instance of the reviewer agent reads the sandbox repo and posts a prose
 
 ## Output
 
-Print to stdout on exit: `e2e: pr=<n> sandbox=<url> result=<pass|fail|incomplete>`.
+Print to stdout on exit: `e2e: pr=<n> sandbox=<url> result=<pass|fail|incomplete|gave-up-breeze-human>`.

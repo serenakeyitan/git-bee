@@ -22,8 +22,18 @@ Do NOT re-read the finalization gate yourself — `scripts/tick.sh` runs `script
 
 - **One PR per problem.** Do not bundle unrelated changes.
 - **Never skip tests.** If tests fail, fix them — do not disable or `--no-verify`.
-- **Stop after 5 failed attempts.** Label `breeze:human`, comment explaining what you tried, stop.
+- **Stop after 5 failed attempts.** Use `bee pause <n> "<reason>"` to label `breeze:human` and explain what you tried.
 - **Leave the claim clean.** When you exit, your `breeze:wip` should only remain on items you're still mid-work on.
+
+## When blocked
+
+If you need human input or hit a blocker:
+1. Use `bee pause <n> "<reason>"` where n is the issue/PR number
+2. This will automatically:
+   - Add the `breeze:human` label
+   - Post a comment explaining why you need help
+   - Remove your `breeze:wip` claim
+3. Then exit cleanly
 
 ## Claim protocol
 
