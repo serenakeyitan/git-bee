@@ -199,13 +199,14 @@ gather_github() {
   GH_PRS_OPEN=0
   GH_STALE_CLAIMS=0
   GH_HUMAN_ITEMS=0
+  GH_ABANDONED_ITEMS=0
   GH_FINALIZED=false
 
   local issues prs
   issues=$(gh issue list --repo "$REPO" --state open --limit 100 \
-    --json number,labels 2>/dev/null || echo "[]")
+    --json number,labels,updatedAt 2>/dev/null || echo "[]")
   prs=$(gh pr list --repo "$REPO" --state open --limit 100 \
-    --json number,labels 2>/dev/null || echo "[]")
+    --json number,labels,updatedAt 2>/dev/null || echo "[]")
 
   GH_ISSUES_OPEN=$(echo "$issues" | jq 'length' 2>/dev/null || echo 0)
   GH_PRS_OPEN=$(echo "$prs" | jq 'length' 2>/dev/null || echo 0)
@@ -218,6 +219,21 @@ gather_github() {
     | length
   ' <(echo "$issues") <(echo "$prs") 2>/dev/null || echo 0)
   GH_HUMAN_ITEMS="$human_items"
+
+  # Abandoned detector: any open item (not already breeze:human) whose
+  # updatedAt is older than 7 days. 7d is the design-doc threshold; tune via
+  # GIT_BEE_ABANDONED_DAYS env if needed.
+  local abandoned_days="${GIT_BEE_ABANDONED_DAYS:-7}"
+  local cutoff_epoch
+  cutoff_epoch=$(( $(date -u +%s) - abandoned_days * 86400 ))
+  local abandoned_items
+  abandoned_items=$(jq -sr --argjson cutoff "$cutoff_epoch" '
+    [ .[0][], .[1][] ]
+    | map(select(.labels | map(.name) | index("breeze:human") | not))
+    | map(select(.updatedAt | fromdateiso8601 < $cutoff))
+    | length
+  ' <(echo "$issues") <(echo "$prs") 2>/dev/null || echo 0)
+  GH_ABANDONED_ITEMS="$abandoned_items"
 
   # Stale claims: walk every open item with breeze:wip and ask claim.sh.
   # Each claim_check costs 2 `gh issue view` calls, so this loop is O(2N+2)
@@ -306,6 +322,9 @@ render_text() {
     if (( GH_HUMAN_ITEMS > 0 )); then
       gh_line+=", ${GH_HUMAN_ITEMS} breeze:human"
     fi
+    if (( GH_ABANDONED_ITEMS > 0 )); then
+      gh_line+=", ${GH_ABANDONED_ITEMS} abandoned (7d+)"
+    fi
   fi
   printf 'github:   %s\n' "$gh_line"
 
@@ -332,6 +351,7 @@ render_json() {
     --argjson prs_open "$GH_PRS_OPEN" \
     --argjson stale_claims "$GH_STALE_CLAIMS" \
     --argjson human_items "$GH_HUMAN_ITEMS" \
+    --argjson abandoned_items "$GH_ABANDONED_ITEMS" \
     --argjson finalized "$GH_FINALIZED" \
     --arg tick_log_path "$TICK_LOG_PATH" \
     --arg tick_log_last "$TICK_LOG_LAST" \
@@ -353,6 +373,7 @@ render_json() {
         prs_open: $prs_open,
         stale_claims: $stale_claims,
         human_items: $human_items,
+        abandoned_items: $abandoned_items,
         finalized: $finalized
       },
       tick_log: {
@@ -381,8 +402,17 @@ cmd_status() {
     render_text
   fi
 
+  # Exit code reflects the 4-state model from the phase-gated-flow design:
+  #   0 healthy  — no blocked or abandoned items
+  #   1 blocked  — one or more breeze:human items need action
+  #   2 abandoned — an open item has gone untouched 7+ days (loop silently broken)
+  # `blocked` wins over `abandoned` because the user is the bottleneck; fixing
+  # the breeze:human item will often also refresh whatever looks abandoned.
   if (( GH_HUMAN_ITEMS > 0 )); then
     exit 1
+  fi
+  if (( GH_ABANDONED_ITEMS > 0 )); then
+    exit 2
   fi
   exit 0
 }
