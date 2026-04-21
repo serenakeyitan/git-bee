@@ -23,6 +23,67 @@ mkdir -p "$LOG_DIR"
 
 log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" | tee -a "$LOG"; }
 
+# Tick history: append-only record of (timestamp, exit_code, sha) per tick.
+# Used by the crash-rollback guard. Rotated by keeping the last N lines.
+HIST="${LOG_DIR}/tick-history.log"
+HIST_MAX=1000
+ROLLBACK_MARKER="${LOG_DIR}/ROLLBACK"
+
+# Record the outcome of this tick on exit (traps run after `exit N`).
+_record_tick() {
+  local code=$?
+  local sha
+  sha=$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || echo "unknown")
+  printf '%s %d %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$code" "$sha" >> "$HIST"
+  # Rotate: keep last $HIST_MAX lines.
+  if [[ -f "$HIST" ]] && (( $(wc -l < "$HIST") > HIST_MAX )); then
+    tail -n "$HIST_MAX" "$HIST" > "$HIST.tmp" && mv "$HIST.tmp" "$HIST"
+  fi
+}
+trap _record_tick EXIT
+
+# Guard -1: halt if a prior crash triggered a rollback. The marker must be
+# cleared by a human acknowledging the rollback before the loop resumes.
+if [[ -f "$ROLLBACK_MARKER" ]]; then
+  log "ROLLBACK marker present at $ROLLBACK_MARKER — loop halted. Remove the file to resume."
+  exit 0
+fi
+
+# Guard -0: 3-consecutive-crash detector. If the last 3 recorded ticks all
+# exited non-zero, roll the checkout back to the most recent known-good SHA
+# and write ROLLBACK_MARKER so subsequent ticks halt.
+if [[ -f "$HIST" ]]; then
+  last3=$(tail -n 3 "$HIST")
+  if [[ $(echo "$last3" | wc -l) -eq 3 ]]; then
+    crashes=$(echo "$last3" | awk '$2 != "0" { c++ } END { print c+0 }')
+    if [[ "$crashes" == "3" ]]; then
+      last_good=$(awk '$2 == "0" { sha = $3 } END { print sha }' "$HIST")
+      bad_sha=$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || echo "unknown")
+      if [[ -n "$last_good" && "$last_good" != "$bad_sha" ]]; then
+        log "CRASH ROLLBACK — 3 consecutive non-zero ticks; reverting $bad_sha → $last_good"
+        cat > "$ROLLBACK_MARKER" <<EOF
+git-bee crash rollback — $(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+Bad SHA:       $bad_sha
+Last good SHA: $last_good
+
+3 consecutive ticks exited non-zero. The loop is halted until this file
+is removed. Investigate the tail of $LOG and ${HIST}, fix the regression,
+then: rm $ROLLBACK_MARKER
+EOF
+        git -C "$REPO_ROOT" checkout -q "$last_good" 2>&1 | tee -a "$LOG" || true
+        gh issue create --repo "$REPO" \
+          --title "bee crash rollback: reverted to $last_good" \
+          --label "breeze:human,priority:high" \
+          --body "$(cat "$ROLLBACK_MARKER")" >/dev/null 2>&1 || true
+        exit 0
+      else
+        log "3 consecutive crashes but no prior good SHA recorded — cannot roll back"
+      fi
+    fi
+  fi
+fi
+
 # Guard 0: credential healthcheck. A tick that runs with expired gh auth
 # produces the same "idle: nothing to do" log line as a finalized project,
 # which silently breaks the loop. Fail loudly and exit instead.
