@@ -127,14 +127,34 @@ cmd_step() {
   cd "$sandbox_path"
   local branch
   branch=$(jq -r '.branch' .meta.json)
+  local pr_number
+  pr_number=$(jq -r '.pr_number' .meta.json)
   local num
   num=$(_next_step_num "$sandbox_path")
   local out err exit_code
   out=$(mktemp) err=$(mktemp)
-  set +e
-  bash -c "$cmd" >"$out" 2>"$err"
-  exit_code=$?
-  set -e
+
+  # Check if the command is attempting to run tests/e2e/verify.sh
+  # Match patterns like: tests/e2e/verify.sh, ./tests/e2e/verify.sh, bash tests/e2e/verify.sh, etc.
+  # But avoid matching: echo tests/e2e/verify.sh, # tests/e2e/verify.sh, "tests/e2e/verify.sh"
+  if [[ "$cmd" =~ ^[^#]*tests/e2e/verify\.sh ]] && \
+     [[ ! "$cmd" =~ ^[[:space:]]*echo[[:space:]] ]] && \
+     [[ ! "$cmd" =~ ^[[:space:]]*# ]]; then
+    # Use the canonical e2e-runner.sh instead of direct execution
+    echo "Detected verify.sh invocation - using e2e-runner.sh" >&2
+    set +e
+    # Change to the repo root to run e2e-runner.sh
+    (cd "$(git rev-parse --show-toplevel 2>/dev/null || echo /Users/keyitan/git-bee)" && \
+     scripts/e2e-runner.sh "$pr_number") >"$out" 2>"$err"
+    exit_code=$?
+    set -e
+  else
+    # Regular command execution
+    set +e
+    bash -c "$cmd" >"$out" 2>"$err"
+    exit_code=$?
+    set -e
+  fi
 
   local step_dir="steps/step-${num}"
   mkdir -p "$step_dir"
