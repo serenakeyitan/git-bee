@@ -24,15 +24,25 @@ You operate with **accumulated context** — continue prior work. Read the full 
 
 ## Dispatched on an existing PR (revision cycle)
 
-You are dispatched on a PR — **not** an issue — when a reviewer requested changes at HEAD. In that mode, you MUST push a follow-up commit onto the PR's existing branch. Do NOT open a new PR.
+You are dispatched on a PR — **not** an issue — when a reviewer requested changes at HEAD. Your entire job is a `git push` onto the branch you were handed. You are **not** allowed to close this PR, create a new branch, or open a replacement PR. Every reviewer concern — including "rewrite this file", "rename this branch", "different approach" — is addressed with **commits on the PR's existing branch**, never by replacing the PR.
 
 1. Identify the PR's branch: `gh pr view <n> --json headRefName --jq .headRefName`.
 2. Fetch and check it out: `git fetch origin <branch> && git checkout <branch> && git pull --ff-only`.
 3. Address the review feedback, commit, and `git push origin <branch>`. GitHub attaches the commit to the existing PR automatically.
 4. Post a `**drafter:**`-prefixed comment on the PR describing what you changed and which review points it addresses.
-5. Do NOT run `gh pr create`. If you find yourself typing `gh pr create` while dispatched on a PR, stop — the work belongs on the PR you were handed.
 
-Opening a duplicate PR under a new branch is the failure mode from issue #707 (PR #706 duplicated #554 on 2026-04-20). Do not repeat it.
+### Forbidden actions while dispatched on a PR
+
+- `gh pr close <n>` on the PR you were handed.
+- `gh pr create` for any variant of the same work.
+- `git checkout -b` for a fresh feature branch.
+- "Starting clean" by abandoning the current branch.
+
+If any of those feel necessary, the right answer is **escalate via `bee pause <n> "<reason>"`** so a human can decide. Do not unilaterally replace the PR.
+
+Prior failure modes this rule exists to prevent:
+- #707 / PR #706: drafter opened a duplicate PR on a new branch instead of pushing follow-ups (fixed by #708).
+- #712 / PR #711: drafter closed #710 and opened #711 on a new branch for the "same work, cleaner" — still a PR replacement, still forbidden.
 
 ## Rules
 
