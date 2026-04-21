@@ -325,9 +325,10 @@ pick_target() {
   # 2. PRs needing a reviewer — no review yet at current HEAD SHA.
   # We inspect reviews, not reviewDecision: "COMMENTED" still leaves
   # reviewDecision empty, but means a review exists.
+  # Skip dispatch if PR has a bee:approved-for-e2e marker in comments.
   local pr_rows
   pr_rows=$(gh pr list --repo "$REPO" --state open --search "sort:created-asc" --limit 50 \
-    --json number,reviewDecision,labels,reviews,headRefOid 2>/dev/null || echo "[]")
+    --json number,reviewDecision,labels,reviews,headRefOid,comments 2>/dev/null || echo "[]")
   pr_rows=$(echo "$pr_rows" | jq '[ .[] | . as $p | $p + {_prio: (if ($p.labels | map(.name) | index("priority:high")) then 0 else 1 end)} ] | sort_by(._prio) | map(del(._prio))')
 
   local unreviewed_prs
@@ -337,6 +338,7 @@ pick_target() {
     | select($pr.labels | map(.name) | index("breeze:wip") | not)
     | select($pr.labels | map(.name) | index("breeze:human") | not)
     | select([$pr.reviews[]? | select(.commit.oid == $pr.headRefOid)] | length == 0)
+    | select(any($pr.comments[]?.body // ""; contains("<!-- bee:approved-for-e2e -->")) | not)
     | $pr.number
   ' 2>/dev/null || true)
   if [[ -n "$unreviewed_prs" ]]; then
@@ -347,6 +349,7 @@ pick_target() {
   # 2b. PRs with a review at HEAD but not approved + no e2e marker → drafter.
   # Guard against re-dispatching drafter on a PR it just updated:
   # only match if no approval marker is present AND a review at HEAD exists.
+  # Also skip if there's a bee:approved-for-e2e marker in comments.
   local feedback_prs
   feedback_prs=$(echo "$pr_rows" | jq -r '
     .[]
@@ -355,6 +358,7 @@ pick_target() {
     | select($pr.labels | map(.name) | index("breeze:human") | not)
     | select($pr.reviewDecision != "APPROVED")
     | select(any($pr.reviews[]?.body // ""; contains("<!-- bee:approved-for-e2e -->")) | not)
+    | select(any($pr.comments[]?.body // ""; contains("<!-- bee:approved-for-e2e -->")) | not)
     | select([$pr.reviews[]? | select(.commit.oid == $pr.headRefOid)] | length > 0)
     | $pr.number
   ' 2>/dev/null || true)
