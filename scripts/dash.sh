@@ -100,8 +100,8 @@ render() {
   fi
 
   printf '%s' "$CLEAR"
-  printf '%s🐝 git-bee dashboard%s   %s%s%s   refresh=%ss (Ctrl-C to exit)\n' \
-    "$BOLD" "$RESET" "$DIM" "$now" "$RESET" "$INTERVAL"
+  printf '%s🐝 git-bee dashboard%s   %s%s %s%s   refresh=%ss (Ctrl-C to exit)\n' \
+    "$BOLD" "$RESET" "$DIM" "$now" "$(date '+%Z')" "$RESET" "$INTERVAL"
   hline
 
   printf '%s launchd:%s  %s\n' "$CYAN" "$RESET" "$launchd_cell"
@@ -121,9 +121,11 @@ render() {
   if [[ -f "$ACTIVITY_LOG" ]]; then
     # Prefer the structured activity log: it has time + agent + target +
     # outcome (verdict scraped from the agent's comment).
+    # Emit raw UTC ts from jq, convert to local via shell date — jq's
+    # strflocaltime/fromdateiso8601 is off by an hour on macOS during DST.
     tail -8 "$ACTIVITY_LOG" | jq -r '
       [
-        (.ts | sub("\\.[0-9]+Z$"; "Z") | sub("^\\d{4}-\\d{2}-\\d{2}T"; "") | sub("Z$"; "")),
+        .ts,
         .agent,
         .target,
         (if .event == "start" then "started"
@@ -134,6 +136,16 @@ render() {
          end),
         ((.duration_s // 0 | tostring) + "s")
       ] | @tsv' 2>/dev/null | \
+      while IFS=$'\t' read -r utc_ts agent target state dur; do
+        epoch=$(date -j -u -f '%Y-%m-%dT%H:%M:%SZ' "${utc_ts%%.*}" '+%s' 2>/dev/null \
+                || date -u -d "$utc_ts" '+%s' 2>/dev/null || echo 0)
+        if [[ "$epoch" != "0" ]]; then
+          local_time=$(date -r "$epoch" '+%H:%M:%S' 2>/dev/null || echo "$utc_ts")
+        else
+          local_time="$utc_ts"
+        fi
+        printf '%s\t%s\t%s\t%s\t%s\n' "$local_time" "$agent" "$target" "$state" "$dur"
+      done | \
       awk -F'\t' -v G="$GREEN" -v R="$RED" -v Y="$YELLOW" -v D="$DIM" -v B="$BOLD" -v Z="$RESET" '
         {
           ts=$1; agent=$2; target=$3; state=$4; dur=$5
