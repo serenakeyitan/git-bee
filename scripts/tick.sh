@@ -514,7 +514,7 @@ check_drafter_closed_pr() {
   # Convert ISO8601 to timestamp using a more portable method
   # Use jq to parse the ISO date as it's more portable than date -j
   local closed_ts
-  closed_ts=$(echo "$closed_at" | jq -r 'fromdateiso8601' 2>/dev/null || echo "0")
+  closed_ts=$(printf '"%s"' "$closed_at" | jq -r 'fromdateiso8601' 2>/dev/null || echo "0")
   local now_ts=$(date +%s)
   local window_start=$((now_ts - window_minutes * 60))
 
