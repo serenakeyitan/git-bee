@@ -27,6 +27,44 @@ mkdir -p "$LOG_DIR"
 
 log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" | tee -a "$LOG"; }
 
+# Check if an agent has been dispatched repeatedly on the same target with null outcomes.
+# Returns 0 if hot loop detected, 1 otherwise.
+check_hot_loop() {
+  local agent="$1" target_num="$2" max_retries="${3:-3}" window_minutes="${4:-30}"
+  local activity_log="${LOG_DIR}/activity.ndjson"
+
+  [[ ! -f "$activity_log" ]] && return 1
+
+  # Calculate cutoff timestamp (N minutes ago)
+  local cutoff
+  if [[ "$(uname)" == "Darwin" ]]; then
+    cutoff=$(date -u -v-"${window_minutes}M" +%Y-%m-%dT%H:%M:%SZ)
+  else
+    cutoff=$(date -u -d "${window_minutes} minutes ago" +%Y-%m-%dT%H:%M:%SZ)
+  fi
+
+  # Count recent dispatches with outcome=null for this agent+target
+  local null_outcomes
+  null_outcomes=$(jq -r --arg agent "$agent" \
+    --arg target "#${target_num}" \
+    --arg cutoff "$cutoff" \
+    '[.
+      | select(.event == "end")
+      | select(.agent == $agent)
+      | select(.target == $target)
+      | select(.ts >= $cutoff)
+      | select(.exit_code == 0)
+      | select(.outcome == null)
+    ] | length' "$activity_log" 2>/dev/null | tail -1 || echo "0")
+
+  if [[ "$null_outcomes" -ge "$max_retries" ]]; then
+    log "HOT LOOP detected: $agent on #$target_num has $null_outcomes consecutive null outcomes within ${window_minutes}min"
+    return 0
+  fi
+
+  return 1
+}
+
 # EXIT trap for tick history logging
 TICK_START_SHA=""
 record_tick_exit() {
@@ -424,6 +462,31 @@ kind="${target%% *}"
 number="${target##* }"
 log "dispatch: kind=$kind target=#$number"
 DISPATCH_START_TS=$SECONDS
+
+# Check for hot loops before dispatching
+if check_hot_loop "$kind" "$number"; then
+  log "Applying breeze:human to #$number due to hot loop detection"
+  set_breeze_state "$REPO" "$number" human
+
+  # Post a comment explaining the hot loop
+  local comment_body
+  comment_body=$(cat <<EOF
+**tick:** hot loop detected
+
+The git-bee tick loop detected repeated dispatches with null outcomes:
+- **Agent**: $kind
+- **Target**: #$number
+- **Pattern**: Multiple consecutive runs exiting 0 with outcome=null
+
+This typically indicates the agent is not posting proper completion markers. Applied \`breeze:human\` label to prevent further automatic dispatch.
+
+**Action required**: Investigate why $kind is not posting outcomes when handling this target.
+EOF
+)
+  gh issue comment "$number" --repo "$REPO" --body "$comment_body" 2>&1 | tee -a "$LOG" || true
+  log "skip: hot loop detected for $kind on #$number, labeled breeze:human"
+  exit 0
+fi
 
 # Acquire claim BEFORE spawning, so concurrent ticks don't dispatch twice
 agent_id="${kind}-$(hostname -s)"
