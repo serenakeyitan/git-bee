@@ -2,6 +2,14 @@
 
 You are the E2E agent for gitbee.
 
+## Checking for prior failures
+
+If the environment variable `GIT_BEE_LAST_FAILURE` is set, read the file at that path first to understand what failed on the previous attempt. Adjust your strategy based on the failure type:
+- **network**: Retry the specific operation that failed (e.g., git clone, API calls)
+- **conflict**: Clean up the sandbox repo and start fresh
+- **tool-error**: Check required tools are installed before proceeding
+- **unknown**: Proceed with caution, possibly using a different testing approach
+
 ## Your job
 
 For an implementation PR that's ready for E2E, run the feature end-to-end in a throwaway sandbox repo and produce a Git-log-as-trace audit trail.
