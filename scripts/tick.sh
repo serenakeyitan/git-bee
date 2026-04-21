@@ -100,7 +100,45 @@ EOF
         set_breeze_state "$REPO" "$new_issue_n" human
       fi
     else
-      log "WARNING: Could not find a known-good SHA in tick history"
+      log "ERROR: Could not find a known-good SHA in tick history — filing alert issue"
+
+      # Write ROLLBACK marker to pause the loop even without a rollback target
+      cat > "$ROLLBACK_MARKER" <<EOF
+Automatic pause triggered at $(date -u +%Y-%m-%dT%H:%M:%SZ)
+Reason: 3 consecutive non-zero tick exits with no known-good SHA available
+Current SHA: $TICK_START_SHA
+Remove this file to resume normal operation.
+EOF
+
+      # Create breeze:human issue to alert the user
+      issue_body=$(cat <<EOF
+**Tick loop crashing — no rollback target available**
+
+The git-bee tick loop detected 3 consecutive crashes but could not find a known-good SHA to roll back to.
+
+- **Time**: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+- **Current SHA**: $TICK_START_SHA
+- **Tick history has no exit-0 rows**
+
+**Action required**:
+1. Investigate the crashes in \`~/.git-bee/tick.log\`
+2. Manually fix the issue or checkout a known-good commit
+3. Remove \`~/.git-bee/ROLLBACK\` to resume the tick loop
+
+The tick loop is now paused and will not dispatch agents until the ROLLBACK marker is removed.
+EOF
+)
+
+      # Create the issue and apply breeze:human via the labeling helper.
+      local new_issue_url
+      new_issue_url=$(gh issue create --repo "$REPO" \
+        --title "Tick crashing with no rollback target available" \
+        --body "$issue_body" 2>&1 | tee -a "$LOG" | tail -1 || true)
+      local new_issue_n
+      new_issue_n=$(echo "$new_issue_url" | grep -oE '/issues/[0-9]+' | grep -oE '[0-9]+' || echo "")
+      if [[ -n "$new_issue_n" ]]; then
+        set_breeze_state "$REPO" "$new_issue_n" human
+      fi
     fi
   fi
 fi

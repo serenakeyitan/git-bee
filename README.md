@@ -108,7 +108,19 @@ To prevent label churn, `breeze:wip` is kept when agents hand off work. The next
 - [`agents/merger.md`](agents/merger.md) — Merges approved PRs with passing E2E; closes linked issues with `breeze:done`.
 - [`agents/auditor.md`](agents/auditor.md) — Fresh-context audit of multi-PR design-doc coverage. Runs when every PR in a doc's `## Milestone plan` is merged; closes the umbrella only if all coverage checks pass, else labels `breeze:human`.
 
-## Cron
+## Setup
+
+### Git hooks
+
+To prevent syntax errors from being pushed to main (issue #557), install the pre-push hook:
+
+```bash
+./scripts/install-hooks.sh
+```
+
+This validates `tick.sh` and other critical scripts before allowing pushes to main.
+
+### Cron
 
 `launchd/com.serenakeyitan.git-bee.plist` — installs `scripts/tick.sh` as a 5-minute launch agent (default). Install with:
 
