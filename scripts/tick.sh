@@ -19,9 +19,88 @@ REPO="serenakeyitan/git-bee"
 LOCK="/tmp/git-bee-agent.pid"
 LOG_DIR="${HOME}/.git-bee"
 LOG="${LOG_DIR}/tick.log"
+TICK_HISTORY="${LOG_DIR}/tick-history.log"
+ROLLBACK_MARKER="${LOG_DIR}/ROLLBACK"
 mkdir -p "$LOG_DIR"
 
 log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" | tee -a "$LOG"; }
+
+# EXIT trap for tick history logging
+TICK_START_SHA=""
+record_tick_exit() {
+  local exit_code=$?
+  if [[ -n "$TICK_START_SHA" ]]; then
+    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $exit_code $TICK_START_SHA" >> "$TICK_HISTORY"
+
+    # Log rotation at 1000 lines
+    if [[ -f "$TICK_HISTORY" ]] && (( $(wc -l < "$TICK_HISTORY") > 1000 )); then
+      tail -n 1000 "$TICK_HISTORY" > "$TICK_HISTORY.tmp"
+      mv "$TICK_HISTORY.tmp" "$TICK_HISTORY"
+    fi
+  fi
+}
+trap record_tick_exit EXIT
+
+# Capture current SHA at start
+TICK_START_SHA=$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo "unknown")
+
+# Guard -0: 3-consecutive-crash detector
+if [[ -f "$TICK_HISTORY" ]]; then
+  # Count non-zero exits in last 3 ticks (Guard 0 exits with 0 by design)
+  crashes=$(tail -n 3 "$TICK_HISTORY" 2>/dev/null | awk '$2 != 0' | wc -l | xargs)
+
+  if [[ "$crashes" == "3" ]]; then
+    log "ROLLBACK: 3 consecutive crashes detected"
+
+    # Find the most recent known-good SHA (last exit 0)
+    last_good=$(awk '$2 == 0 {sha=$3} END {print sha}' "$TICK_HISTORY" 2>/dev/null || echo "")
+
+    if [[ -n "$last_good" && "$last_good" != "unknown" ]]; then
+      log "Rolling back to last known-good SHA: $last_good"
+      git -C "$REPO_ROOT" checkout "$last_good" 2>&1 | tee -a "$LOG"
+
+      # Write ROLLBACK marker
+      cat > "$ROLLBACK_MARKER" <<EOF
+Automatic rollback triggered at $(date -u +%Y-%m-%dT%H:%M:%SZ)
+Reason: 3 consecutive non-zero tick exits
+Rolled back to: $last_good
+Remove this file to resume normal operation.
+EOF
+
+      # Create breeze:human issue
+      issue_body=$(cat <<EOF
+**Automatic rollback triggered**
+
+The git-bee tick loop detected 3 consecutive crashes and rolled back to the last known-good commit.
+
+- **Time**: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+- **Rolled back to**: $last_good
+- **Current SHA before rollback**: $TICK_START_SHA
+
+**Action required**:
+1. Investigate the crashes in \`~/.git-bee/tick.log\`
+2. Fix the underlying issue
+3. Remove \`~/.git-bee/ROLLBACK\` to resume the tick loop
+
+The tick loop is now paused and will not dispatch agents until the ROLLBACK marker is removed.
+EOF
+)
+
+      gh issue create --repo "$REPO" \
+        --title "Automatic rollback: 3 consecutive tick crashes detected" \
+        --body "$issue_body" \
+        --label "breeze:human,priority:high" 2>&1 | tee -a "$LOG" || true
+    else
+      log "WARNING: Could not find a known-good SHA in tick history"
+    fi
+  fi
+fi
+
+# Guard -1: ROLLBACK marker — if it exists, exit early without dispatching
+if [[ -f "$ROLLBACK_MARKER" ]]; then
+  log "ROLLBACK marker exists — ticks paused. Remove $ROLLBACK_MARKER to resume."
+  exit 0
+fi
 
 # Guard 0: credential healthcheck. A tick that runs with expired gh auth
 # produces the same "idle: nothing to do" log line as a finalized project,
