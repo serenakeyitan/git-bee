@@ -304,7 +304,7 @@ pick_target() {
     done <<< "$supervised"
   fi
 
-  # 1c. Approved PRs without an E2E trace yet → E2E.
+  # 1c. Approved PRs without an E2E trace yet → E2E (with supervisor check).
   local approved_prs
   approved_prs=$(echo "$pr_basics" | jq -r '
     .[]
@@ -318,8 +318,76 @@ pick_target() {
     | .number
   ' 2>/dev/null || true)
   if [[ -n "$approved_prs" ]]; then
-    echo "e2e $(echo "$approved_prs" | head -1)"
-    return
+    local pr_number=$(echo "$approved_prs" | head -1)
+
+    # Supervisor consistency check for reviewer verdict invariant (issue #734)
+    # Check alignment between activity log marker and GitHub review state
+    local activity_log="${LOG_DIR}/activity.ndjson"
+    local marker_action=""
+    if [[ -f "$activity_log" ]]; then
+      # Get last reviewer activity marker for this PR
+      marker_action=$(jq -r --arg pr "#${pr_number}" \
+        'select(.event == "end" and .agent == "reviewer" and .target == $pr) |
+         .outcome // ""' "$activity_log" 2>/dev/null | tail -1)
+    fi
+
+    # Get GitHub review state for the last review
+    local gh_state=""
+    gh_state=$(gh pr view "$pr_number" --repo "$REPO" --json reviews \
+      --jq '.reviews | if length > 0 then .[-1].state else "" end' 2>/dev/null || echo "")
+
+    # Log supervisor decision
+    local decision=""
+    local should_dispatch=1
+
+    # Check acceptable pairings
+    if [[ "$marker_action" == "approved" ]] && [[ "$gh_state" == "APPROVED" ]]; then
+      decision="advance"
+    elif [[ "$marker_action" == "requested-changes" ]] && [[ "$gh_state" == "CHANGES_REQUESTED" ]]; then
+      # This shouldn't happen here (approved PRs only) but check for completeness
+      decision="revise"
+      should_dispatch=0
+      echo "drafter $pr_number"
+      return
+    elif [[ "$marker_action" == "paused" ]]; then
+      decision="human"
+      should_dispatch=0
+      # breeze:human should already be set, but ensure it
+      set_breeze_state "$REPO" "$pr_number" human
+    else
+      # Divergence detected - flag for human review
+      decision="divergence"
+      should_dispatch=0
+      set_breeze_state "$REPO" "$pr_number" human
+
+      # File supervisor issue
+      local issue_body=$(cat <<EOF
+**Supervisor: Reviewer verdict divergence detected**
+
+The supervisor detected a mismatch between the reviewer's activity marker and GitHub review state for PR #${pr_number}.
+
+- **Activity marker action**: \`${marker_action:-"(none)"}\`
+- **GitHub review state**: \`${gh_state:-"(none)"}\`
+- **Expected**: These should align (approved/APPROVED, requested-changes/CHANGES_REQUESTED, or paused)
+
+This indicates the reviewer agent has diverged sources of truth for its verdict. Applied \`breeze:human\` label to PR #${pr_number} pending investigation.
+
+See issue #734 for context on this invariant enforcement.
+EOF
+)
+
+      gh issue create --repo "$REPO" \
+        --title "Supervisor: Reviewer verdict divergence on PR #${pr_number}" \
+        --body "$issue_body" 2>&1 | tee -a "$LOG" || true
+    fi
+
+    # Log supervisor decision
+    log "supervisor: pr=${pr_number} reviewer_marker=${marker_action:-null} gh_state=${gh_state:-null} decision=${decision}"
+
+    if [[ "$should_dispatch" == "1" ]]; then
+      echo "e2e $pr_number"
+      return
+    fi
   fi
 
   # 2. PRs needing a reviewer — no review yet at current HEAD SHA.

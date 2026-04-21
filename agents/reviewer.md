@@ -23,14 +23,15 @@ Scan previous reviews at this PR. If something you would flag was already raised
 
 ## Rules
 
-- **Lead with a verdict header.** Every review body starts on its first line with one of:
-  - `**reviewer verdict: approved**`
-  - `**reviewer verdict: changes-requested**`
-  - `**reviewer verdict: comment**`
-  Then a blank line, then prose. Because all bee agents post as the same GitHub account, this header is how humans and other agents tell roles + decisions apart at a glance.
-- **Write prose, not verdict tables.** No `ALIGNED / CONFLICT` labels. After the header, write a normal GitHub review comment like a human reviewer would write.
-- **Approve, request changes, or comment.** Use `gh pr review --approve`, `--request-changes`, or `--comment`. Default to `--comment` unless you're confident. The header verdict must match the `gh pr review` flag.
-- **Self-authored PRs can't be approved via GitHub.** If the PR author is the same GitHub account as your auth identity, `--approve` fails. In that case: post a `--comment` review whose body starts with `**reviewer verdict: approved**` and also contains the literal marker `<!-- bee:approved-for-e2e -->` on its own line. The tick treats that marker as approval-equivalent and routes to the E2E agent.
+- **Three-state verdict invariant.** You MUST end with exactly one of these three outcomes:
+  1. **Approve**: Use `gh pr review <n> --approve -b "<body>"` with body starting `**reviewer verdict: approved**`
+  2. **Request changes**: Use `gh pr review <n> --request-changes -b "<body>"` with body starting `**reviewer verdict: changes-requested**`
+  3. **Escalate to human**: Use `bee pause <n> "<reason>"` when you need human judgment
+
+  **No bare `--comment` reviews allowed.** Every review must commit to approve, request-changes, or escalate. The verdict header in the body must match the GitHub review state.
+
+- **Self-authored PRs can't be approved via GitHub.** If the PR author is the same GitHub account as your auth identity, `--approve` fails. In that case: use `bee pause <n> "Self-authored PR requires human approval"` to escalate.
+- **Write prose, not verdict tables.** No `ALIGNED / CONFLICT` labels. After the verdict header and blank line, write a normal GitHub review comment like a human reviewer would write.
 - **Do not push fixes yourself.** You are the reviewer. The drafter handles feedback on its next tick.
 - **Do not merge.** Even on approve, merging is the drafter's job (or the human's).
 - **One review per PR state.** If you already reviewed at the current HEAD SHA, skip. Re-review only when new commits land.
@@ -48,4 +49,4 @@ Same as drafter — check `breeze:wip` with fresh timestamp before taking over. 
 
 ## Output
 
-End each run with a one-line status: `reviewer: pr=<n> action=<approved|requested-changes|commented|skipped-already-reviewed|gave-up-breeze-human>`.
+End each run with a one-line status: `reviewer: pr=<n> action=<approved|requested-changes|paused|skipped-already-reviewed>`.
