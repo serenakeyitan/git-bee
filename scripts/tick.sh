@@ -486,6 +486,64 @@ check_hot_loop() {
   return 1
 }
 
+# Check if drafter recently closed a PR it was dispatched on.
+# Returns 0 if drafter closed this PR within the last hour (should skip dispatch), 1 otherwise.
+check_drafter_closed_pr() {
+  local number="$1"
+  local window_minutes=60
+
+  # Only check for PRs, not issues
+  if ! gh pr view "$number" --repo "$REPO" --json number >/dev/null 2>&1; then
+    return 1  # Not a PR, allow dispatch
+  fi
+
+  # Check if PR is closed
+  local pr_state
+  pr_state=$(gh pr view "$number" --repo "$REPO" --json state --jq '.state' 2>/dev/null || echo "")
+  if [[ "$pr_state" != "CLOSED" ]]; then
+    return 1  # PR is not closed, allow dispatch
+  fi
+
+  # Check when PR was closed
+  local closed_at
+  closed_at=$(gh pr view "$number" --repo "$REPO" --json closedAt --jq '.closedAt' 2>/dev/null || echo "")
+  if [[ -z "$closed_at" ]]; then
+    return 1  # Can't determine close time, allow dispatch
+  fi
+
+  # Convert ISO8601 to timestamp using a more portable method
+  # Use jq to parse the ISO date as it's more portable than date -j
+  local closed_ts
+  closed_ts=$(printf '"%s"' "$closed_at" | jq -r 'fromdateiso8601' 2>/dev/null || echo "0")
+  local now_ts=$(date +%s)
+  local window_start=$((now_ts - window_minutes * 60))
+
+  if [[ "$closed_ts" -lt "$window_start" ]]; then
+    return 1  # Closed more than an hour ago, allow dispatch
+  fi
+
+  # Check if drafter was dispatched on this PR before it was closed
+  local activity_log="${LOG_DIR}/activity.ndjson"
+  [[ ! -f "$activity_log" ]] && return 1
+
+  local drafter_dispatched
+  drafter_dispatched=$(jq -r --arg target "#${number}" \
+    --arg closed_ts "$closed_ts" \
+    'select(.event == "start" and
+            .agent == "drafter" and
+            .target == $target) |
+     .ts | fromdateiso8601 |
+     select(. < ($closed_ts | tonumber))' \
+    "$activity_log" 2>/dev/null | head -1)
+
+  if [[ -n "$drafter_dispatched" ]]; then
+    log "DRAFTER CLOSED PR: refusing to re-dispatch drafter on #$number (closed within last hour after drafter dispatch)"
+    return 0
+  fi
+
+  return 1
+}
+
 target=$(pick_target)
 
 if [[ -z "$target" ]]; then
@@ -522,6 +580,24 @@ Check \`~/.git-bee/activity.ndjson\` for dispatch history."
   gh issue comment "$number" --repo "$REPO" --body "$comment_body" 2>&1 | tee -a "$LOG" || true
 
   log "skip: hot loop detected for $kind on #$number — labeled breeze:human"
+  exit 0
+fi
+
+# Check if drafter closed this PR recently (issue #719 prevention)
+if [[ "$kind" == "drafter" ]] && check_drafter_closed_pr "$number"; then
+  # Apply breeze:human label to prevent re-dispatch
+  set_breeze_state "$REPO" "$number" human
+
+  # Post explanatory comment on the PR
+  comment_body="**tick:**
+
+Refusing to re-dispatch drafter on PR #$number that was closed within the last hour after a drafter dispatch.
+
+The drafter is forbidden from closing PRs it was dispatched to work on (see #719). Applied \`breeze:human\` label to prevent automatic re-dispatch. Human intervention required to determine why the PR was closed and whether it should be reopened or a new approach is needed."
+
+  gh issue comment "$number" --repo "$REPO" --body "$comment_body" 2>&1 | tee -a "$LOG" || true
+
+  log "skip: drafter closed PR #$number recently — labeled breeze:human"
   exit 0
 fi
 
