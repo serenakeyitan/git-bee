@@ -513,7 +513,7 @@ if check_hot_loop "$kind" "$number"; then
   # Post explanatory comment on the issue/PR
   local comment_body="**tick:**
 
-Hot loop detected: $kind agent dispatched ${threshold:-3} times to this target with null outcome in the last ${window_minutes:-30} minutes.
+Hot loop detected: $kind agent dispatched 3 times to this target with null outcome in the last 30 minutes.
 
 Applied \`breeze:human\` label to prevent further automatic dispatches. Human intervention required to investigate why the agent is not posting an outcome marker.
 
