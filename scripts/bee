@@ -54,6 +54,7 @@ Usage:
   bee exclude list       Show excluded repos (deny-list)
   bee exclude add <owner/repo>    Add a repo to the exclude list
   bee exclude remove <owner/repo> Remove a repo from the exclude list
+  bee watch-agents       Attach to tmux session to watch agents in real-time
 
 Exit codes:
   0  agent idle or running cleanly
@@ -686,6 +687,39 @@ cmd_exclude() {
   esac
 }
 
+cmd_watch_agents() {
+  # Check if tmux is available
+  if ! command -v tmux >/dev/null 2>&1; then
+    echo "bee watch-agents: tmux is not installed" >&2
+    echo "Install tmux to use the watch-agents feature" >&2
+    exit 2
+  fi
+
+  # Create session if it doesn't exist
+  if ! tmux has-session -t git-bee 2>/dev/null; then
+    echo "Creating git-bee tmux session..."
+    tmux new-session -d -s git-bee -n "waiting" "echo 'Waiting for agents to be dispatched...'; echo 'Press Ctrl-b d to detach'; cat"
+    # Set remain-on-exit for the session so completed agents stay visible
+    tmux set-option -t git-bee remain-on-exit on
+  fi
+
+  # Attach to the session
+  echo "Attaching to git-bee tmux session..."
+  echo "Navigation:"
+  echo "  Ctrl-b n    = next window"
+  echo "  Ctrl-b p    = previous window"
+  echo "  Ctrl-b w    = window list"
+  echo "  Ctrl-b d    = detach from session"
+  echo ""
+
+  # If already inside tmux, use switch-client; otherwise attach
+  if [[ -n "${TMUX:-}" ]]; then
+    tmux switch-client -t git-bee
+  else
+    tmux attach-session -t git-bee
+  fi
+}
+
 cmd_log() {
   local activity_log="$HOME/.git-bee/activity.ndjson"
   if [[ ! -f "$activity_log" ]]; then
@@ -814,6 +848,7 @@ main() {
     config)       cmd_config "$@" ;;
     watch)        cmd_watch "$@" ;;
     exclude)      cmd_exclude "$@" ;;
+    watch-agents) cmd_watch_agents "$@" ;;
     help|-h|--help) usage ;;
     *) echo "bee: unknown command: $cmd" >&2; usage >&2; exit 2 ;;
   esac
