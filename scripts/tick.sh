@@ -27,6 +27,14 @@ mkdir -p "$LOG_DIR"
 
 log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" | tee -a "$LOG"; }
 
+# First-line logging - before any guards
+# Detect if this was fired by launchd or self-triggered
+LAUNCHD_FIRE="no"
+if [[ "${PPID:-0}" == "1" ]] || ps -p "${PPID:-0}" 2>/dev/null | grep -q launchd; then
+  LAUNCHD_FIRE="yes"
+fi
+log "tick start (pid=$$ launchd_fire=$LAUNCHD_FIRE)"
+
 # Ensure breeze labels exist with correct colors/descriptions (idempotent).
 if [[ -x "$HERE/ensure-labels.sh" ]]; then
   "$HERE/ensure-labels.sh" "$REPO" >/dev/null 2>&1 || true
@@ -151,6 +159,7 @@ fi
 # Guard -1: ROLLBACK marker — if it exists, exit early without dispatching
 if [[ -f "$ROLLBACK_MARKER" ]]; then
   log "ROLLBACK marker exists — ticks paused. Remove $ROLLBACK_MARKER to resume."
+  log "tick end (pid=$$ exit=rollback-marker)"
   exit 0
 fi
 
@@ -159,6 +168,7 @@ fi
 # which silently breaks the loop. Fail loudly and exit instead.
 if ! gh auth status >/dev/null 2>&1; then
   log "CREDENTIAL EXPIRED — gh auth status failed; skipping tick. Run 'gh auth login'."
+  log "tick end (pid=$$ exit=gh-auth-fail)"
   exit 0
 fi
 
@@ -171,6 +181,7 @@ if [[ -f "$LOCK" ]]; then
   pid=$(cat "$LOCK" 2>/dev/null || echo "")
   if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
     log "skip: agent already running (pid=$pid)"
+    log "tick end (pid=$$ exit=lock-held)"
     exit 0
   fi
   log "stale lock (pid=$pid), removing"
@@ -564,6 +575,7 @@ if [[ -z "$target" ]]; then
   else
     log "idle: no unclaimed open items — project finalized or nothing to do"
   fi
+  log "tick end (pid=$$ exit=idle)"
   exit 0
 fi
 
@@ -587,6 +599,7 @@ Check \`~/.git-bee/activity.ndjson\` for dispatch history."
   gh issue comment "$number" --repo "$REPO" --body "$comment_body" 2>&1 | tee -a "$LOG" || true
 
   log "skip: hot loop detected for $kind on #$number — labeled breeze:human"
+  log "tick end (pid=$$ exit=hot-loop-detected)"
   exit 0
 fi
 
@@ -605,6 +618,7 @@ The drafter is forbidden from closing PRs it was dispatched to work on (see #719
   gh issue comment "$number" --repo "$REPO" --body "$comment_body" 2>&1 | tee -a "$LOG" || true
 
   log "skip: drafter closed PR #$number recently — labeled breeze:human"
+  log "tick end (pid=$$ exit=drafter-closed-pr)"
   exit 0
 fi
 
@@ -615,6 +629,7 @@ DISPATCH_START_TS=$SECONDS
 agent_id="${kind}-$(hostname -s)"
 if ! claim_acquire "$REPO" "$number" "$agent_id"; then
   log "lost race to acquire claim on #$number, exiting"
+  log "tick end (pid=$$ exit=claim-race-lost)"
   exit 0
 fi
 
@@ -637,6 +652,7 @@ trap release_all EXIT INT TERM HUP
 role_prompt_file="$REPO_ROOT/agents/${kind}.md"
 if [[ ! -f "$role_prompt_file" ]]; then
   log "ERROR: no role prompt at $role_prompt_file"
+  log "tick end (pid=$$ exit=no-role-prompt)"
   exit 1
 fi
 
@@ -706,6 +722,7 @@ else
 
     # Self-trigger the next tick even on failure (issue #724)
     log "self-triggering next tick after agent failure"
+    log "tick end (pid=$$ exit=dispatched-${kind})"
     release_all  # Must release before exec (exec prevents EXIT trap from running)
     exec "$HERE/tick.sh"
   }
@@ -719,5 +736,6 @@ notify "🐝 ${kind} done" "#${number} finished in $(( (SECONDS - DISPATCH_START
 # The PID lock ensures at-most-one concurrent agent, making this safe.
 # We exec to replace this process, avoiding a recursive call stack.
 log "self-triggering next tick after agent completion"
+log "tick end (pid=$$ exit=dispatched-${kind})"
 release_all  # Must release before exec (exec prevents EXIT trap from running)
 exec "$HERE/tick.sh"
