@@ -83,8 +83,8 @@ PASSED=""
 TOTAL=""
 
 while IFS= read -r line; do
-  # Try to parse as JSON
-  if echo "$line" | jq -e . >/dev/null 2>&1; then
+  # Try to parse as JSON (skip empty lines)
+  if [[ -n "$line" ]] && echo "$line" | jq -e . >/dev/null 2>&1; then
     NDJSON_LINES+=("$line")
     # Check if this line contains a verdict
     if echo "$line" | jq -e 'has("passed") and has("total")' >/dev/null 2>&1; then
