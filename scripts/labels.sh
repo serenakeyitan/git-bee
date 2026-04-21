@@ -34,19 +34,27 @@ set_breeze_state() {
   labels=$(gh issue view "$number" --repo "$repo" --json labels --jq '[.labels[].name] | join(",")' 2>/dev/null || echo "")
 
   local to_remove=""
-  for state in wip human done; do
+  for state in new wip human done; do
     local lbl="breeze:${state}"
     if [[ ",$labels," == *",${lbl},"* && "$state" != "$new_state" ]]; then
       to_remove="${to_remove}${lbl},"
     fi
   done
 
-  if [[ -n "$to_remove" ]]; then
-    gh issue edit "$number" --repo "$repo" --remove-label "${to_remove%,}" >/dev/null 2>&1 || true
-  fi
-
+  # Atomic transition: remove old and add new in a single gh command.
+  # This ensures we never have two breeze:* labels at once.
   local target="breeze:${new_state}"
-  if [[ ",$labels," != *",${target},"* ]]; then
+  if [[ -n "$to_remove" ]]; then
+    # Has old labels to remove — combine remove and add operations
+    if [[ ",$labels," != *",${target},"* ]]; then
+      # Need to both remove old and add new
+      gh issue edit "$number" --repo "$repo" --remove-label "${to_remove%,}" --add-label "$target" >/dev/null 2>&1 || true
+    else
+      # Target already present, just remove old ones
+      gh issue edit "$number" --repo "$repo" --remove-label "${to_remove%,}" >/dev/null 2>&1 || true
+    fi
+  elif [[ ",$labels," != *",${target},"* ]]; then
+    # No old labels to remove, just add new
     gh issue edit "$number" --repo "$repo" --add-label "$target" >/dev/null 2>&1 || true
   fi
 }
@@ -56,6 +64,7 @@ set_breeze_state() {
 clear_breeze_state() {
   local repo="$1" number="$2"
   gh issue edit "$number" --repo "$repo" \
+    --remove-label "breeze:new" \
     --remove-label "breeze:wip" \
     --remove-label "breeze:human" \
     --remove-label "breeze:done" >/dev/null 2>&1 || true

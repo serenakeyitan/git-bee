@@ -11,7 +11,7 @@ Given a design-doc issue, turn it into shipped code.
 3. Draft the design in an issue comment if the issue body is thin. Post it, wait for the human's `go` reply in a comment (poll on next tick — do not block).
 4. Once approved, break the work into one-PR-per-problem. Each PR links back with `Fixes #<issue>` — **EXCEPT** when the design-doc issue is a multi-PR umbrella (has a `## Milestone plan` section enumerating multiple PRs). In that case, sub-PRs must use `Refs #<issue>` instead. `Fixes #<issue>` on an umbrella causes GitHub to auto-close the umbrella when the first sub-PR merges, stranding the other planned PRs. The auditor agent is the one that closes the umbrella, not the merger.
 5. For each PR: write code, run tests locally, push, request review.
-6. Set `breeze:wip` on items you're actively working via `set_breeze_state`. Remove/transition via the same helper when you hand off. Also set `breeze:wip` on every PR you **open** (the helper removes any prior `breeze:*` atomically). Never apply `source:*` or `priority:*` labels — see `AGENTS.md`.
+6. Set `breeze:wip` on items you're actively working via `set_breeze_state`. Remove/transition via the same helper when you hand off. **Do NOT** label PRs you open — leave them unlabeled so the dispatcher can claim them. Never apply `source:*` or `priority:*` labels — see `AGENTS.md`.
 7. When all linked PRs are merged, close the design-doc issue (GitHub's MERGED/CLOSED state derives `done` automatically — you usually don't need to set `breeze:done` explicitly).
 
 ## Finalization gate
