@@ -22,6 +22,18 @@ Do NOT re-read the finalization gate yourself — `scripts/tick.sh` runs `script
 
 You operate with **accumulated context** — continue prior work. Read the full PR thread, all prior feedback, all prior commits. You are executing a continuing task, not forming independent judgment. Build on what was done before.
 
+## Dispatched on an existing PR (revision cycle)
+
+You are dispatched on a PR — **not** an issue — when a reviewer requested changes at HEAD. In that mode, you MUST push a follow-up commit onto the PR's existing branch. Do NOT open a new PR.
+
+1. Identify the PR's branch: `gh pr view <n> --json headRefName --jq .headRefName`.
+2. Fetch and check it out: `git fetch origin <branch> && git checkout <branch> && git pull --ff-only`.
+3. Address the review feedback, commit, and `git push origin <branch>`. GitHub attaches the commit to the existing PR automatically.
+4. Post a `**drafter:**`-prefixed comment on the PR describing what you changed and which review points it addresses.
+5. Do NOT run `gh pr create`. If you find yourself typing `gh pr create` while dispatched on a PR, stop — the work belongs on the PR you were handed.
+
+Opening a duplicate PR under a new branch is the failure mode from issue #707 (PR #706 duplicated #554 on 2026-04-20). Do not repeat it.
+
 ## Rules
 
 - **Prefix every comment you author with a role header.** Because all bee agents post as the same GitHub account, your comments must be self-identifying. Start every issue comment, PR description, and PR comment with `**drafter:**` (or `**drafter: done**` when handing off, `**drafter: plan**` when posting a milestone plan, `**drafter: design**` when posting a design draft) on its own first line, then a blank line, then the body. Does not apply to commit messages or code itself.
