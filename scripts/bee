@@ -627,11 +627,113 @@ cmd_watch() {
   esac
 }
 
+cmd_log() {
+  local activity_log="$HOME/.git-bee/activity.ndjson"
+  if [[ ! -f "$activity_log" ]]; then
+    echo "bee log: no activity yet ($activity_log missing)" >&2
+    exit 0
+  fi
+
+  local limit=20 agent_filter="" target_filter="" since_filter="" raw=0
+  while (( $# > 0 )); do
+    case "$1" in
+      -n)          limit="$2"; shift 2 ;;
+      --agent)     agent_filter="$2"; shift 2 ;;
+      --target)    target_filter="$2"; shift 2 ;;
+      --since)     since_filter="$2"; shift 2 ;;
+      --raw)       raw=1; shift ;;
+      -h|--help)
+        cat <<USAGE
+usage: bee log [-n N] [--agent <name>] [--target #N] [--since <duration>] [--raw]
+
+  -n N           Show at most N events (default 20).
+  --agent NAME   Filter by agent (drafter, reviewer, e2e, merger, ...).
+  --target #N    Filter by issue/PR number (with or without #).
+  --since DUR    Relative time filter. Examples: 30m, 2h, 1d.
+  --raw          Print NDJSON lines instead of the pretty view.
+USAGE
+        exit 0 ;;
+      *) echo "bee log: unknown flag: $1" >&2; exit 2 ;;
+    esac
+  done
+
+  local since_epoch=0
+  if [[ -n "$since_filter" ]]; then
+    local num unit
+    num=$(echo "$since_filter" | grep -oE '^[0-9]+' || echo "")
+    unit=$(echo "$since_filter" | grep -oE '[a-zA-Z]+$' || echo "")
+    [[ -z "$num" || -z "$unit" ]] && { echo "bee log: bad --since value: $since_filter" >&2; exit 2; }
+    local secs=0
+    case "$unit" in
+      s|sec|secs|second|seconds) secs=$num ;;
+      m|min|mins|minute|minutes) secs=$(( num * 60 )) ;;
+      h|hr|hrs|hour|hours)       secs=$(( num * 3600 )) ;;
+      d|day|days)                secs=$(( num * 86400 )) ;;
+      *) echo "bee log: bad unit '$unit'" >&2; exit 2 ;;
+    esac
+    since_epoch=$(( $(date -u +%s) - secs ))
+  fi
+
+  # Normalize target filter (strip leading #)
+  target_filter="${target_filter#\#}"
+
+  local target_arg="${target_filter:-}"
+  local agent_arg="${agent_filter:-}"
+
+  local filtered
+  filtered=$(jq -c --argjson since "$since_epoch" \
+                    --arg agent "$agent_arg" \
+                    --arg target "$target_arg" '
+    select(
+      (($agent == "") or (.agent == $agent))
+      and (($target == "") or (.target == ("#" + $target)))
+      and (($since == 0) or ((.ts | sub("Z$"; "Z") | fromdateiso8601) >= $since))
+    )
+  ' "$activity_log" 2>/dev/null | tail -n "$limit")
+
+  if (( raw )); then
+    printf '%s\n' "$filtered"
+    return
+  fi
+
+  if [[ -z "$filtered" ]]; then
+    echo "(no matching events)"
+    return
+  fi
+
+  # Pretty-print. Columns: time | agent | target | outcome/state | title.
+  printf '%s\n' "$filtered" | jq -r '
+    [
+      (.ts | sub("\\.[0-9]+Z$"; "Z") | sub("^\\d{4}-\\d{2}-\\d{2}T"; "") | sub("Z$"; "")),
+      .agent,
+      .target,
+      (if .event == "start" then "started"
+       else
+         (if .outcome != null then .outcome
+          elif .exit_code == 0 then "done"
+          else "exit:" + (.exit_code | tostring) end)
+       end),
+      (.duration_s // 0 | tostring) + "s",
+      (.title // ""),
+      (.umbrella // "")
+    ] | @tsv
+  ' | awk -F'\t' '
+    {
+      ts=$1; agent=$2; target=$3; state=$4; dur=$5; title=$6; umbrella=$7
+      # Truncate title to fit
+      if (length(title) > 50) title = substr(title, 1, 47) "..."
+      umb_str = (umbrella != "" ? "  (umbrella " umbrella ")" : "")
+      printf "%s  %-16s %-6s  %-18s  %6s  %s%s\n", ts, agent, target, state, dur, title, umb_str
+    }
+  '
+}
+
 main() {
   local cmd="${1:-help}"
   shift || true
   case "$cmd" in
     status)       cmd_status "$@" ;;
+    log)          cmd_log "$@" ;;
     pause)        cmd_pause "$@" ;;
     config)       cmd_config "$@" ;;
     watch)        cmd_watch "$@" ;;
