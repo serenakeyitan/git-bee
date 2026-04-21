@@ -131,10 +131,28 @@ cmd_step() {
   num=$(_next_step_num "$sandbox_path")
   local out err exit_code
   out=$(mktemp) err=$(mktemp)
-  set +e
-  bash -c "$cmd" >"$out" 2>"$err"
-  exit_code=$?
-  set -e
+
+  # Check if this command is running tests/e2e/verify.sh
+  # Pattern matches: tests/e2e/verify.sh, ./tests/e2e/verify.sh, sh tests/e2e/verify.sh, bash tests/e2e/verify.sh
+  # But NOT: echo tests/e2e/verify.sh, # tests/e2e/verify.sh, cat tests/e2e/verify.sh
+  if [[ "$cmd" =~ ^(bash[[:space:]]+|sh[[:space:]]+|\./)?tests/e2e/verify\.sh([[:space:]]|$) ]]; then
+    # Extract PR number from .meta.json
+    local pr_number
+    pr_number=$(jq -r '.pr_number' .meta.json)
+    # Use e2e-runner.sh for verify.sh execution
+    # Find the e2e-runner.sh script relative to this script
+    local script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    set +e
+    "${script_dir}/e2e-runner.sh" "$pr_number" >"$out" 2>"$err"
+    exit_code=$?
+    set -e
+  else
+    # Original behavior for other commands
+    set +e
+    bash -c "$cmd" >"$out" 2>"$err"
+    exit_code=$?
+    set -e
+  fi
 
   local step_dir="steps/step-${num}"
   mkdir -p "$step_dir"
