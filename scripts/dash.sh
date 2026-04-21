@@ -15,6 +15,27 @@
 
 set -uo pipefail
 
+# Dependency checks
+if ! command -v jq &>/dev/null; then
+  echo "Error: jq is not installed. Please install jq to use the dashboard." >&2
+  echo "  macOS: brew install jq" >&2
+  echo "  Linux: apt-get install jq or yum install jq" >&2
+  exit 1
+fi
+
+if ! command -v gh &>/dev/null; then
+  echo "Error: GitHub CLI (gh) is not installed. Please install gh to use the dashboard." >&2
+  echo "  macOS: brew install gh" >&2
+  echo "  Linux: https://github.com/cli/cli/blob/trunk/docs/install_linux.md" >&2
+  exit 1
+fi
+
+# Check gh authentication
+if ! gh auth status &>/dev/null; then
+  echo "Error: GitHub CLI is not authenticated. Please run 'gh auth login' first." >&2
+  exit 1
+fi
+
 ONCE=0
 case "${1:-}" in
   --once) ONCE=1; INTERVAL=0 ;;
@@ -97,48 +118,64 @@ render() {
   hline
   printf '%s Recent dispatches (last 8)%s\n' "$BOLD" "$RESET"
   if [[ -f "$TICK_LOG" ]]; then
-    grep -E 'dispatch: kind=|agent exited' "$TICK_LOG" 2>/dev/null | tail -8 | \
-      sed -E "s/^([0-9T:Z-]+)/${DIM}\1${RESET}/" | \
-      sed -E "s/(dispatch: kind=[a-z0-9-]+)/${GREEN}\1${RESET}/" | \
-      sed -E "s/(agent exited non-zero \([0-9]+\))/${RED}\1${RESET}/" | \
-      sed -E "s/(agent exited cleanly)/${GREEN}\1${RESET}/" | \
-      sed 's/^/  /'
+    # Use a temporary variable to capture the read, avoiding partial line issues
+    local dispatches
+    if dispatches=$(grep -E 'dispatch: kind=|agent exited' "$TICK_LOG" 2>/dev/null | tail -8); then
+      echo "$dispatches" | \
+        sed -E "s/^([0-9T:Z-]+)/${DIM}\1${RESET}/" | \
+        sed -E "s/(dispatch: kind=[a-z0-9-]+)/${GREEN}\1${RESET}/" | \
+        sed -E "s/(agent exited non-zero \([0-9]+\))/${RED}\1${RESET}/" | \
+        sed -E "s/(agent exited cleanly)/${GREEN}\1${RESET}/" | \
+        sed 's/^/  /'
+    else
+      printf '  %s(could not read tick.log)%s\n' "$DIM" "$RESET"
+    fi
   else
     printf '  %s(no tick.log yet)%s\n' "$DIM" "$RESET"
   fi
 
   hline
   printf '%s Open PRs (%d)%s\n' "$BOLD" "$prs_open" "$RESET"
-  gh pr list --repo "$REPO" --state open --limit 20 \
-    --json number,title,labels,isDraft 2>/dev/null | \
-    jq -r '.[] | "\(.number)\t\([.labels[].name] | map(select(startswith("breeze:"))) | join(",") // "")\t\(if .isDraft then "DRAFT " else "" end)\(.title)"' | \
-    while IFS=$'\t' read -r num lbls rest; do
-      local lbl_colored=""
-      case "$lbls" in
-        *breeze:wip*)   lbl_colored="${YELLOW}wip${RESET}" ;;
-        *breeze:human*) lbl_colored="${RED}human${RESET}" ;;
-        *breeze:done*)  lbl_colored="${GREEN}done${RESET}" ;;
-        *)              lbl_colored="${DIM}new${RESET}" ;;
-      esac
-      printf '  %s#%s%s  %-6b  %s\n' "$BLUE" "$num" "$RESET" "$lbl_colored" "$rest"
-    done
+  local pr_data
+  if pr_data=$(gh pr list --repo "$REPO" --state open --limit 20 \
+    --json number,title,labels,isDraft 2>/dev/null); then
+    echo "$pr_data" | \
+      jq -r '.[] | "\(.number)\t\([.labels[].name] | map(select(startswith("breeze:"))) | join(",") // "")\t\(if .isDraft then "DRAFT " else "" end)\(.title)"' | \
+      while IFS=$'\t' read -r num lbls rest; do
+        local lbl_colored=""
+        case "$lbls" in
+          *breeze:wip*)   lbl_colored="${YELLOW}wip${RESET}" ;;
+          *breeze:human*) lbl_colored="${RED}human${RESET}" ;;
+          *breeze:done*)  lbl_colored="${GREEN}done${RESET}" ;;
+          *)              lbl_colored="${DIM}new${RESET}" ;;
+        esac
+        printf '  %s#%s%s  %-6b  %s\n' "$BLUE" "$num" "$RESET" "$lbl_colored" "$rest"
+      done
+  else
+    printf '  %s(GitHub API error - could not fetch PRs)%s\n' "$RED" "$RESET"
+  fi
 
   hline
   printf '%s Open issues (%d) — breeze:human flagged%s\n' "$BOLD" "$issues_open" "$RESET"
-  gh issue list --repo "$REPO" --state open --limit 20 \
-    --json number,title,labels 2>/dev/null | \
-    jq -r '.[] | "\(.number)\t\(([.labels[].name] | map(select(startswith("breeze:"))) | join(",")) // "-")\t\(.title)"' | \
-    awk -F'\t' '{ if ($2 == "") $2 = "-"; OFS="\t"; print }' | \
-    while IFS=$'\t' read -r num lbls rest; do
-      local lbl_colored=""
-      case "$lbls" in
-        *breeze:human*) lbl_colored="${RED}human${RESET}" ;;
-        *breeze:wip*)   lbl_colored="${YELLOW}wip${RESET}" ;;
-        *breeze:done*)  lbl_colored="${GREEN}done${RESET}" ;;
-        *)              lbl_colored="${DIM}new${RESET}" ;;
-      esac
-      printf '  %s#%s%s  %-6b  %s\n' "$BLUE" "$num" "$RESET" "$lbl_colored" "$rest"
-    done
+  local issue_data
+  if issue_data=$(gh issue list --repo "$REPO" --state open --limit 20 \
+    --json number,title,labels 2>/dev/null); then
+    echo "$issue_data" | \
+      jq -r '.[] | "\(.number)\t\(([.labels[].name] | map(select(startswith("breeze:"))) | join(",")) // "-")\t\(.title)"' | \
+      awk -F'\t' '{ if ($2 == "") $2 = "-"; OFS="\t"; print }' | \
+      while IFS=$'\t' read -r num lbls rest; do
+        local lbl_colored=""
+        case "$lbls" in
+          *breeze:human*) lbl_colored="${RED}human${RESET}" ;;
+          *breeze:wip*)   lbl_colored="${YELLOW}wip${RESET}" ;;
+          *breeze:done*)  lbl_colored="${GREEN}done${RESET}" ;;
+          *)              lbl_colored="${DIM}new${RESET}" ;;
+        esac
+        printf '  %s#%s%s  %-6b  %s\n' "$BLUE" "$num" "$RESET" "$lbl_colored" "$rest"
+      done
+  else
+    printf '  %s(GitHub API error - could not fetch issues)%s\n' "$RED" "$RESET"
+  fi
 }
 
 trap 'printf "\n%sdashboard stopped.%s\n" "$DIM" "$RESET"; exit 0' INT TERM
