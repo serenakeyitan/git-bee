@@ -224,25 +224,27 @@ pick_target() {
 
   local pr_basics
   pr_basics=$(gh pr list --repo "$REPO" --state open --search "sort:created-asc" --limit 50 \
-    --json number,reviewDecision,labels,reviews,comments 2>/dev/null || echo "[]")
+    --json number,reviewDecision,labels,reviews,comments,headRefOid 2>/dev/null || echo "[]")
   # Priority sort: priority:high first, then original (created-asc) order.
   pr_basics=$(echo "$pr_basics" | jq '[ .[] | . as $p | $p + {_prio: (if ($p.labels | map(.name) | index("priority:high")) then 0 else 1 end)} ] | sort_by(._prio) | map(del(._prio))')
 
   # 1. Approved PRs that also have a passing E2E trace → merger.
   # "Approved" = reviewDecision == APPROVED OR a review body contains the marker.
-  # "E2E pass" = any PR issue-comment contains "**E2E trace (pass)**".
+  # "E2E pass" = any PR issue-comment contains "**E2E trace (pass)**" with matching SHA.
   local mergeable_prs
   mergeable_prs=$(echo "$pr_basics" | jq -r '
     .[]
-    | select(.labels | map(.name) | index("breeze:wip") | not)
-    | select(.labels | map(.name) | index("breeze:human") | not)
+    | . as $pr
+    | select($pr.labels | map(.name) | index("breeze:wip") | not)
+    | select($pr.labels | map(.name) | index("breeze:human") | not)
     | select(
-        .reviewDecision == "APPROVED"
-        or any(.reviews[]?.body // ""; contains("<!-- bee:approved-for-e2e -->"))
-        or any(.comments[]?.body // ""; contains("<!-- bee:approved-for-e2e -->"))
+        $pr.reviewDecision == "APPROVED"
+        or any($pr.reviews[]?.body // ""; contains("<!-- bee:approved-for-e2e -->"))
+        or any($pr.comments[]?.body // ""; contains("<!-- bee:approved-for-e2e -->"))
       )
-    | select(any(.comments[]?.body // ""; contains("**E2E trace (pass)**")))
-    | .number
+    | ($pr.headRefOid[0:7]) as $short_sha
+    | select(any($pr.comments[]?.body // ""; contains("**E2E trace (pass)**") and contains($short_sha)))
+    | $pr.number
   ' 2>/dev/null || true)
   if [[ -n "$mergeable_prs" ]]; then
     echo "merger $(echo "$mergeable_prs" | head -1)"
@@ -253,12 +255,14 @@ pick_target() {
   local traced_prs
   traced_prs=$(echo "$pr_basics" | jq -r '
     .[]
-    | select(.labels | map(.name) | index("breeze:wip") | not)
-    | select(.labels | map(.name) | index("breeze:human") | not)
-    | select(any(.comments[]?.body // ""; contains("**E2E trace")))
-    | select(any(.comments[]?.body // ""; contains("**E2E trace (pass)**")) | not)
-    | select(any(.comments[]?.body // ""; contains("**e2e-supervisor:")) | not)
-    | .number
+    | . as $pr
+    | select($pr.labels | map(.name) | index("breeze:wip") | not)
+    | select($pr.labels | map(.name) | index("breeze:human") | not)
+    | ($pr.headRefOid[0:7]) as $short_sha
+    | select(any($pr.comments[]?.body // ""; contains("**E2E trace") and contains($short_sha)))
+    | select(any($pr.comments[]?.body // ""; contains("**E2E trace (pass)**") and contains($short_sha)) | not)
+    | select(any($pr.comments[]?.body // ""; contains("**e2e-supervisor:")) | not)
+    | $pr.number
   ' 2>/dev/null || true)
   if [[ -n "$traced_prs" ]]; then
     echo "e2e-supervisor $(echo "$traced_prs" | head -1)"
@@ -306,18 +310,26 @@ pick_target() {
   fi
 
   # 1c. Approved PRs without an E2E trace yet → E2E.
+  # Need headRefOid to check if E2E trace matches current HEAD
+  local pr_with_head
+  pr_with_head=$(gh pr list --repo "$REPO" --state open --search "sort:created-asc" --limit 50 \
+    --json number,reviewDecision,labels,reviews,comments,headRefOid 2>/dev/null || echo "[]")
+  pr_with_head=$(echo "$pr_with_head" | jq '[ .[] | . as $p | $p + {_prio: (if ($p.labels | map(.name) | index("priority:high")) then 0 else 1 end)} ] | sort_by(._prio) | map(del(._prio))')
+
   local approved_prs
-  approved_prs=$(echo "$pr_basics" | jq -r '
+  approved_prs=$(echo "$pr_with_head" | jq -r '
     .[]
-    | select(.labels | map(.name) | index("breeze:wip") | not)
-    | select(.labels | map(.name) | index("breeze:human") | not)
+    | . as $pr
+    | select($pr.labels | map(.name) | index("breeze:wip") | not)
+    | select($pr.labels | map(.name) | index("breeze:human") | not)
     | select(
-        .reviewDecision == "APPROVED"
-        or any(.reviews[]?.body // ""; contains("<!-- bee:approved-for-e2e -->"))
-        or any(.comments[]?.body // ""; contains("<!-- bee:approved-for-e2e -->"))
+        $pr.reviewDecision == "APPROVED"
+        or any($pr.reviews[]?.body // ""; contains("<!-- bee:approved-for-e2e -->"))
+        or any($pr.comments[]?.body // ""; contains("<!-- bee:approved-for-e2e -->"))
       )
-    | select(any(.comments[]?.body // ""; contains("**E2E trace")) | not)
-    | .number
+    | ($pr.headRefOid[0:7]) as $short_sha
+    | select([$pr.comments[]?.body // "" | select(contains("**E2E trace") and contains($short_sha))] | length == 0)
+    | $pr.number
   ' 2>/dev/null || true)
   if [[ -n "$approved_prs" ]]; then
     echo "e2e $(echo "$approved_prs" | head -1)"
