@@ -427,7 +427,7 @@ fi
 # Runtime: claude -p in bypass mode. Set CLAUDE_BIN env to override.
 CLAUDE_BIN="${CLAUDE_BIN:-claude}"
 
-prompt=$(cat <<EOF
+prompt=$(cat <<PROMPT_EOF
 You are acting in the role defined by @${role_prompt_file}.
 
 Your target is ${REPO}#${number}.
@@ -438,12 +438,12 @@ When you finish (or give up), exit cleanly. The tick wrapper will release the
 claim automatically on exit.
 
 CRITICAL — never push to main. All code lands via PRs on feature branches.
-If you run any \`git push\` in a Bash tool call, source the guard first:
+If you run any 'git push' in a Bash tool call, source the guard first:
   source ${REPO_ROOT}/scripts/preflight-push.sh && git push ...
-The guard hard-refuses pushes whose target ref is \`main\` or \`master\`.
-Using \`Closes #<pr>\` in a commit body that lands directly on main will
-auto-close the PR without merging it (this happened on PR #551 → see #555).
-EOF
+The guard hard-refuses pushes whose target ref is 'main' or 'master'.
+Using 'Closes #<pr>' in a commit body that lands directly on main will
+auto-close the PR without merging it. This happened on PR #551 — see #555.
+PROMPT_EOF
 )
 
 log "spawning ${CLAUDE_BIN} for role=${kind} target=#${number}"
