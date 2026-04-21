@@ -27,6 +27,11 @@ mkdir -p "$LOG_DIR"
 
 log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" | tee -a "$LOG"; }
 
+# Ensure breeze labels exist with correct colors/descriptions (idempotent).
+if [[ -x "$HERE/ensure-labels.sh" ]]; then
+  "$HERE/ensure-labels.sh" "$REPO" >/dev/null 2>&1 || true
+fi
+
 # EXIT trap for tick history logging
 TICK_START_SHA=""
 record_tick_exit() {
@@ -204,6 +209,7 @@ fi
 #   3. issues with NO linked open PR and no breeze:wip → drafter agent
 pick_target() {
   # Emits "<kind> <number>" to stdout, nothing if idle.
+  # Note: --state open excludes MERGED/CLOSED PRs per first-tree classifier precedence.
 
   local pr_basics
   pr_basics=$(gh pr list --repo "$REPO" --state open --search "sort:created-asc" --limit 50 \
@@ -348,6 +354,7 @@ pick_target() {
 
   # 3. issues with no linked OPEN PR and no breeze:wip
   # We detect linkage by scanning open PR bodies for "Fixes #N" / "Closes #N".
+  # Note: --state open already excludes closed issues per first-tree classifier.
   local open_pr_bodies
   open_pr_bodies=$(gh pr list --repo "$REPO" --state open --limit 50 \
     --json body --jq '.[].body' 2>/dev/null || true)
