@@ -680,14 +680,21 @@ USAGE
   local target_arg="${target_filter:-}"
   local agent_arg="${agent_filter:-}"
 
+  # Use ISO-string lexicographic compare for --since (avoids jq's macOS DST bug
+  # where fromdateiso8601 returns an epoch one hour ahead during DST).
+  local since_iso=""
+  if (( since_epoch > 0 )); then
+    since_iso=$(date -u -r "$since_epoch" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || echo "")
+  fi
+
   local filtered
-  filtered=$(jq -c --argjson since "$since_epoch" \
+  filtered=$(jq -c --arg since "$since_iso" \
                     --arg agent "$agent_arg" \
                     --arg target "$target_arg" '
     select(
       (($agent == "") or (.agent == $agent))
       and (($target == "") or (.target == ("#" + $target)))
-      and (($since == 0) or ((.ts | sub("Z$"; "Z") | fromdateiso8601) >= $since))
+      and (($since == "") or (.ts >= $since))
     )
   ' "$activity_log" 2>/dev/null | tail -n "$limit")
 
@@ -702,9 +709,11 @@ USAGE
   fi
 
   # Pretty-print. Columns: time | agent | target | outcome/state | title.
+  # Emit raw UTC ts then convert to local via shell date (jq's strflocaltime
+  # is buggy on macOS during DST).
   printf '%s\n' "$filtered" | jq -r '
     [
-      (.ts | sub("\\.[0-9]+Z$"; "Z") | sub("^\\d{4}-\\d{2}-\\d{2}T"; "") | sub("Z$"; "")),
+      .ts,
       .agent,
       .target,
       (if .event == "start" then "started"
@@ -717,10 +726,18 @@ USAGE
       (.title // ""),
       (.umbrella // "")
     ] | @tsv
-  ' | awk -F'\t' '
+  ' | while IFS=$'\t' read -r utc_ts agent target state dur title umbrella; do
+      epoch=$(date -j -u -f '%Y-%m-%dT%H:%M:%SZ' "${utc_ts%%.*}" '+%s' 2>/dev/null \
+              || date -u -d "$utc_ts" '+%s' 2>/dev/null || echo 0)
+      if [[ "$epoch" != "0" ]]; then
+        local_time=$(date -r "$epoch" '+%H:%M:%S' 2>/dev/null || echo "$utc_ts")
+      else
+        local_time="$utc_ts"
+      fi
+      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$local_time" "$agent" "$target" "$state" "$dur" "$title" "$umbrella"
+    done | awk -F'\t' '
     {
       ts=$1; agent=$2; target=$3; state=$4; dur=$5; title=$6; umbrella=$7
-      # Truncate title to fit
       if (length(title) > 50) title = substr(title, 1, 47) "..."
       umb_str = (umbrella != "" ? "  (umbrella " umbrella ")" : "")
       printf "%s  %-16s %-6s  %-18s  %6s  %s%s\n", ts, agent, target, state, dur, title, umb_str

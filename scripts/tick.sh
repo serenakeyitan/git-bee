@@ -335,9 +335,12 @@ pick_target() {
         if echo "$issue_body" | grep -q "^- \[x\] \*\*plan confirmed"; then
           # If every PR number enumerated in the milestone plan is merged, route
           # to the auditor. Otherwise continue with drafter.
+          # grep returns 1 when no match; under `set -euo pipefail` that aborts
+          # the whole function silently. Wrap so an empty plan list is a valid
+          # "no PRs enumerated" signal, not a fatal error.
           local plan_prs
-          plan_prs=$(echo "$issue_body" | awk '/^## Milestone plan/,/^## /' | \
-            grep -oE '^### PR [0-9]+' | grep -oE '[0-9]+' | sort -u)
+          plan_prs=$({ echo "$issue_body" | awk '/^## Milestone plan/,/^## /' \
+            | grep -oE '^### PR [0-9]+' | grep -oE '[0-9]+' | sort -u; } || true)
           if [[ -n "$plan_prs" ]]; then
             local all_merged=1
             local any_pr=0
