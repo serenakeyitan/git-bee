@@ -394,6 +394,7 @@ fi
 kind="${target%% *}"
 number="${target##* }"
 log "dispatch: kind=$kind target=#$number"
+DISPATCH_START_TS=$SECONDS
 
 # Acquire claim BEFORE spawning, so concurrent ticks don't dispatch twice
 agent_id="${kind}-$(hostname -s)"
@@ -447,10 +448,13 @@ PROMPT_EOF
 )
 
 log "spawning ${CLAUDE_BIN} for role=${kind} target=#${number}"
+"$REPO_ROOT/scripts/activity.sh" start "$REPO" "$kind" "$number" "$agent_id" 2>/dev/null || true
 "$CLAUDE_BIN" -p "$prompt" --permission-mode bypassPermissions 2>&1 | tee -a "$LOG" || {
   exit_code=$?
   log "agent exited non-zero (${exit_code}) for #${number}"
+  "$REPO_ROOT/scripts/activity.sh" end "$REPO" "$kind" "$number" "$agent_id" "$exit_code" "$(( SECONDS - DISPATCH_START_TS ))" 2>/dev/null || true
   exit "$exit_code"
 }
 
 log "agent exited cleanly for #${number}"
+"$REPO_ROOT/scripts/activity.sh" end "$REPO" "$kind" "$number" "$agent_id" 0 "$(( SECONDS - DISPATCH_START_TS ))" 2>/dev/null || true

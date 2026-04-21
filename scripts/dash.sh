@@ -45,6 +45,7 @@ esac
 REPO="serenakeyitan/git-bee"
 BEE="$(cd "$(dirname "$0")" && pwd)/bee"
 TICK_LOG="$HOME/.git-bee/tick.log"
+ACTIVITY_LOG="$HOME/.git-bee/activity.ndjson"
 ROLLBACK_MARKER="$HOME/.git-bee/ROLLBACK"
 
 # ANSI
@@ -116,9 +117,35 @@ render() {
   printf '%s tick.log:%s %s%s%s\n' "$CYAN" "$RESET" "$DIM" "$last_line" "$RESET"
 
   hline
-  printf '%s Recent dispatches (last 8)%s\n' "$BOLD" "$RESET"
-  if [[ -f "$TICK_LOG" ]]; then
-    # Use a temporary variable to capture the read, avoiding partial line issues
+  printf '%s Recent activity (last 8)%s\n' "$BOLD" "$RESET"
+  if [[ -f "$ACTIVITY_LOG" ]]; then
+    # Prefer the structured activity log: it has time + agent + target +
+    # outcome (verdict scraped from the agent's comment).
+    tail -8 "$ACTIVITY_LOG" | jq -r '
+      [
+        (.ts | sub("\\.[0-9]+Z$"; "Z") | sub("^\\d{4}-\\d{2}-\\d{2}T"; "") | sub("Z$"; "")),
+        .agent,
+        .target,
+        (if .event == "start" then "started"
+         else
+           (if .outcome != null then .outcome
+            elif .exit_code == 0 then "done"
+            else "exit:" + (.exit_code | tostring) end)
+         end),
+        ((.duration_s // 0 | tostring) + "s")
+      ] | @tsv' 2>/dev/null | \
+      awk -F'\t' -v G="$GREEN" -v R="$RED" -v Y="$YELLOW" -v D="$DIM" -v B="$BOLD" -v Z="$RESET" '
+        {
+          ts=$1; agent=$2; target=$3; state=$4; dur=$5
+          color=Y
+          if (state == "started") color=D
+          else if (state == "done" || state == "pass" || state == "approved" || state == "merged") color=G
+          else if (state ~ /^exit:/ || state == "requested-changes" || state == "lazy-run" || state == "code-bug" || state == "test-bug") color=R
+          printf "  %s%s%s  %s%-10s%s %s%-5s%s  %s%-18s%s  %s%s%s\n", \
+            D, ts, Z, B, agent, Z, B, target, Z, color, state, Z, D, dur, Z
+        }'
+  elif [[ -f "$TICK_LOG" ]]; then
+    # Fallback: grep tick.log (no outcome info, just events)
     local dispatches
     if dispatches=$(grep -E 'dispatch: kind=|agent exited' "$TICK_LOG" 2>/dev/null | tail -8); then
       echo "$dispatches" | \
@@ -127,11 +154,9 @@ render() {
         sed -E "s/(agent exited non-zero \([0-9]+\))/${RED}\1${RESET}/" | \
         sed -E "s/(agent exited cleanly)/${GREEN}\1${RESET}/" | \
         sed 's/^/  /'
-    else
-      printf '  %s(could not read tick.log)%s\n' "$DIM" "$RESET"
     fi
   else
-    printf '  %s(no tick.log yet)%s\n' "$DIM" "$RESET"
+    printf '  %s(no activity yet)%s\n' "$DIM" "$RESET"
   fi
 
   hline
