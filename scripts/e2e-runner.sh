@@ -96,9 +96,11 @@ done < "$TEMP_OUTPUT"
 
 # Convert NDJSON lines array to JSON array
 NDJSON_JSON="[]"
-for line in "${NDJSON_LINES[@]}"; do
-  NDJSON_JSON=$(echo "$NDJSON_JSON" | jq --argjson obj "$line" '. + [$obj]')
-done
+if [[ ${#NDJSON_LINES[@]} -gt 0 ]]; then
+  for line in "${NDJSON_LINES[@]}"; do
+    NDJSON_JSON=$(echo "$NDJSON_JSON" | jq --argjson obj "$line" '. + [$obj]')
+  done
+fi
 
 # Construct the artifact JSON
 cat > "$TEMP_ARTIFACT" <<EOF
