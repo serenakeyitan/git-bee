@@ -218,6 +218,53 @@ fi
 #   1. approved PRs → e2e agent
 #   2. unreviewed open PRs → reviewer agent
 #   3. issues with NO linked open PR and no breeze:wip → drafter agent
+# Returns 0 if PR has valid human approval (GitHub APPROVED review OR
+# bee:approved-for-e2e marker in any review/comment authored at/after HEAD SHA timestamp).
+has_human_approval() {
+  local pr_json="$1"
+  local pr_head_sha="$2"
+
+  # Extract HEAD commit timestamp
+  local head_timestamp
+  head_timestamp=$(git -C "$REPO_ROOT" show -s --format=%ct "$pr_head_sha" 2>/dev/null || echo "0")
+
+  # Check for GitHub APPROVED review decision
+  local has_github_approval
+  has_github_approval=$(echo "$pr_json" | jq -r '.reviewDecision == "APPROVED"' 2>/dev/null || echo "false")
+
+  if [[ "$has_github_approval" == "true" ]]; then
+    return 0
+  fi
+
+  # Check for bee:approved-for-e2e marker in reviews at/after HEAD timestamp
+  local has_marker_in_reviews
+  has_marker_in_reviews=$(echo "$pr_json" | jq --arg head_ts "$head_timestamp" '
+    any(.reviews[]?;
+      (.body // "" | contains("<!-- bee:approved-for-e2e -->")) and
+      ((.submittedAt // "" | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) >= ($head_ts | tonumber))
+    )
+  ' 2>/dev/null || echo "false")
+
+  if [[ "$has_marker_in_reviews" == "true" ]]; then
+    return 0
+  fi
+
+  # Check for bee:approved-for-e2e marker in comments at/after HEAD timestamp
+  local has_marker_in_comments
+  has_marker_in_comments=$(echo "$pr_json" | jq --arg head_ts "$head_timestamp" '
+    any(.comments[]?;
+      (.body // "" | contains("<!-- bee:approved-for-e2e -->")) and
+      ((.createdAt // "" | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) >= ($head_ts | tonumber))
+    )
+  ' 2>/dev/null || echo "false")
+
+  if [[ "$has_marker_in_comments" == "true" ]]; then
+    return 0
+  fi
+
+  return 1
+}
+
 pick_target() {
   # Emits "<kind> <number>" to stdout, nothing if idle.
   # Note: --state open excludes MERGED/CLOSED PRs per first-tree classifier precedence.
@@ -231,21 +278,23 @@ pick_target() {
   # 1. Approved PRs that also have a passing E2E trace → merger.
   # "Approved" = reviewDecision == APPROVED OR a review body contains the marker.
   # "E2E pass" = any PR issue-comment contains "**E2E trace (pass)**".
-  local mergeable_prs
-  mergeable_prs=$(echo "$pr_basics" | jq -r '
-    .[]
-    | . as $pr
-    | select(.labels | map(.name) | index("breeze:wip") | not)
-    | select(.labels | map(.name) | index("breeze:human") | not)
-    | select(
-        .reviewDecision == "APPROVED"
-        or any(.reviews[]?.body // ""; contains("<!-- bee:approved-for-e2e -->"))
-        or any(.comments[]?.body // ""; contains("<!-- bee:approved-for-e2e -->"))
-      )
-    | select(any(.comments[]?.body // "";
-        (contains("**E2E trace (pass)**") and contains($pr.headRefOid[0:7]))))
-    | .number
-  ' 2>/dev/null || true)
+  local mergeable_prs=""
+  local pr
+  while IFS= read -r pr; do
+    [[ -z "$pr" ]] && continue
+    local pr_num=$(echo "$pr" | jq -r '.number')
+    local pr_sha=$(echo "$pr" | jq -r '.headRefOid')
+    local has_wip=$(echo "$pr" | jq -r '.labels | map(.name) | index("breeze:wip") // false' 2>/dev/null || echo "false")
+    local has_human=$(echo "$pr" | jq -r '.labels | map(.name) | index("breeze:human") // false' 2>/dev/null || echo "false")
+    local has_e2e_pass=$(echo "$pr" | jq -r --arg sha "${pr_sha:0:7}" '
+      any(.comments[]?.body // ""; (contains("**E2E trace (pass)**") and contains($sha)))' 2>/dev/null || echo "false")
+
+    if [[ "$has_wip" == "false" && "$has_human" == "false" && "$has_e2e_pass" == "true" ]]; then
+      if has_human_approval "$pr" "$pr_sha"; then
+        mergeable_prs="${mergeable_prs}${pr_num}"$'\n'
+      fi
+    fi
+  done < <(echo "$pr_basics" | jq -c '.[]' 2>/dev/null)
   if [[ -n "$mergeable_prs" ]]; then
     echo "merger $(echo "$mergeable_prs" | head -1)"
     return
@@ -310,21 +359,22 @@ pick_target() {
   fi
 
   # 1c. Approved PRs without an E2E trace yet → E2E.
-  local approved_prs
-  approved_prs=$(echo "$pr_basics" | jq -r '
-    .[]
-    | . as $pr
-    | select(.labels | map(.name) | index("breeze:wip") | not)
-    | select(.labels | map(.name) | index("breeze:human") | not)
-    | select(
-        .reviewDecision == "APPROVED"
-        or any(.reviews[]?.body // ""; contains("<!-- bee:approved-for-e2e -->"))
-        or any(.comments[]?.body // ""; contains("<!-- bee:approved-for-e2e -->"))
-      )
-    | select(any(.comments[]?.body // "";
-        (contains("**E2E trace") and contains($pr.headRefOid[0:7]))) | not)
-    | .number
-  ' 2>/dev/null || true)
+  local approved_prs=""
+  while IFS= read -r pr; do
+    [[ -z "$pr" ]] && continue
+    local pr_num=$(echo "$pr" | jq -r '.number')
+    local pr_sha=$(echo "$pr" | jq -r '.headRefOid')
+    local has_wip=$(echo "$pr" | jq -r '.labels | map(.name) | index("breeze:wip") // false' 2>/dev/null || echo "false")
+    local has_human=$(echo "$pr" | jq -r '.labels | map(.name) | index("breeze:human") // false' 2>/dev/null || echo "false")
+    local has_e2e_trace=$(echo "$pr" | jq -r --arg sha "${pr_sha:0:7}" '
+      any(.comments[]?.body // ""; (contains("**E2E trace") and contains($sha)))' 2>/dev/null || echo "false")
+
+    if [[ "$has_wip" == "false" && "$has_human" == "false" && "$has_e2e_trace" == "false" ]]; then
+      if has_human_approval "$pr" "$pr_sha"; then
+        approved_prs="${approved_prs}${pr_num}"$'\n'
+      fi
+    fi
+  done < <(echo "$pr_basics" | jq -c '.[]' 2>/dev/null)
   if [[ -n "$approved_prs" ]]; then
     echo "e2e $(echo "$approved_prs" | head -1)"
     return
@@ -339,16 +389,22 @@ pick_target() {
     --json number,reviewDecision,labels,reviews,headRefOid,comments 2>/dev/null || echo "[]")
   pr_rows=$(echo "$pr_rows" | jq '[ .[] | . as $p | $p + {_prio: (if ($p.labels | map(.name) | index("priority:high")) then 0 else 1 end)} ] | sort_by(._prio) | map(del(._prio))')
 
-  local unreviewed_prs
-  unreviewed_prs=$(echo "$pr_rows" | jq -r '
-    .[]
-    | . as $pr
-    | select($pr.labels | map(.name) | index("breeze:wip") | not)
-    | select($pr.labels | map(.name) | index("breeze:human") | not)
-    | select([$pr.reviews[]? | select(.commit.oid == $pr.headRefOid)] | length == 0)
-    | select(any($pr.comments[]?.body // ""; contains("<!-- bee:approved-for-e2e -->")) | not)
-    | $pr.number
-  ' 2>/dev/null || true)
+  local unreviewed_prs=""
+  while IFS= read -r pr; do
+    [[ -z "$pr" ]] && continue
+    local pr_num=$(echo "$pr" | jq -r '.number')
+    local pr_sha=$(echo "$pr" | jq -r '.headRefOid')
+    local has_wip=$(echo "$pr" | jq -r '.labels | map(.name) | index("breeze:wip") // false' 2>/dev/null || echo "false")
+    local has_human=$(echo "$pr" | jq -r '.labels | map(.name) | index("breeze:human") // false' 2>/dev/null || echo "false")
+    local reviews_at_head=$(echo "$pr" | jq -r --arg sha "$pr_sha" '[$pr.reviews[]? | select(.commit.oid == $sha)] | length' 2>/dev/null || echo "0")
+
+    if [[ "$has_wip" == "false" && "$has_human" == "false" && "$reviews_at_head" == "0" ]]; then
+      # Skip if PR already has human approval via escape hatch
+      if ! has_human_approval "$pr" "$pr_sha"; then
+        unreviewed_prs="${unreviewed_prs}${pr_num}"$'\n'
+      fi
+    fi
+  done < <(echo "$pr_rows" | jq -c '.[]' 2>/dev/null)
   if [[ -n "$unreviewed_prs" ]]; then
     echo "reviewer $(echo "$unreviewed_prs" | head -1)"
     return
@@ -358,18 +414,22 @@ pick_target() {
   # Guard against re-dispatching drafter on a PR it just updated:
   # only match if no approval marker is present AND a review at HEAD exists.
   # Also skip if there's a bee:approved-for-e2e marker in comments.
-  local feedback_prs
-  feedback_prs=$(echo "$pr_rows" | jq -r '
-    .[]
-    | . as $pr
-    | select($pr.labels | map(.name) | index("breeze:wip") | not)
-    | select($pr.labels | map(.name) | index("breeze:human") | not)
-    | select($pr.reviewDecision != "APPROVED")
-    | select(any($pr.reviews[]?.body // ""; contains("<!-- bee:approved-for-e2e -->")) | not)
-    | select(any($pr.comments[]?.body // ""; contains("<!-- bee:approved-for-e2e -->")) | not)
-    | select([$pr.reviews[]? | select(.commit.oid == $pr.headRefOid)] | length > 0)
-    | $pr.number
-  ' 2>/dev/null || true)
+  local feedback_prs=""
+  while IFS= read -r pr; do
+    [[ -z "$pr" ]] && continue
+    local pr_num=$(echo "$pr" | jq -r '.number')
+    local pr_sha=$(echo "$pr" | jq -r '.headRefOid')
+    local has_wip=$(echo "$pr" | jq -r '.labels | map(.name) | index("breeze:wip") // false' 2>/dev/null || echo "false")
+    local has_human=$(echo "$pr" | jq -r '.labels | map(.name) | index("breeze:human") // false' 2>/dev/null || echo "false")
+    local reviews_at_head=$(echo "$pr" | jq -r --arg sha "$pr_sha" '[.reviews[]? | select(.commit.oid == $sha)] | length' 2>/dev/null || echo "0")
+
+    if [[ "$has_wip" == "false" && "$has_human" == "false" && "$reviews_at_head" -gt "0" ]]; then
+      # Only dispatch drafter if PR doesn't have human approval
+      if ! has_human_approval "$pr" "$pr_sha"; then
+        feedback_prs="${feedback_prs}${pr_num}"$'\n'
+      fi
+    fi
+  done < <(echo "$pr_rows" | jq -c '.[]' 2>/dev/null)
   if [[ -n "$feedback_prs" ]]; then
     echo "drafter $(echo "$feedback_prs" | head -1)"
     return

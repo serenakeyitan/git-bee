@@ -86,6 +86,16 @@ An autonomous agent that buzzes through GitHub issues on a schedule, picks up un
 6. The agent works the item to completion, then removes its claim.
 7. When nothing is left open, the tick exits quietly. The project is finalized.
 
+## Approving PRs
+
+git-bee is a **one-account** system — all agents run as your GitHub account. This design choice eliminates onboarding friction (no second GitHub account required) but means GitHub's self-approval restriction applies.
+
+To approve a git-bee PR for E2E testing and merging:
+- Post a comment containing `<!-- bee:approved-for-e2e -->` on the PR
+- The marker must be posted at or after the current HEAD commit timestamp to be valid
+- Removing `breeze:human` is optional — the dispatcher respects the marker regardless
+- Once approved, the PR advances through E2E testing and merging without further pauses (unless new commits are pushed)
+
 ## Labels
 
 Only three, matching the breeze/gardener convention. No `breeze:new` — absence of any label on an open item means "unclaimed, fair game."
