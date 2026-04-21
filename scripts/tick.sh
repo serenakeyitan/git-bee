@@ -436,6 +436,13 @@ Your agent id for this run is ${agent_id}.
 Read the role prompt, read the target issue/PR, and do the work described there.
 When you finish (or give up), exit cleanly. The tick wrapper will release the
 claim automatically on exit.
+
+CRITICAL — never push to main. All code lands via PRs on feature branches.
+If you run any \`git push\` in a Bash tool call, source the guard first:
+  source ${REPO_ROOT}/scripts/preflight-push.sh && git push ...
+The guard hard-refuses pushes whose target ref is \`main\` or \`master\`.
+Using \`Closes #<pr>\` in a commit body that lands directly on main will
+auto-close the PR without merging it (this happened on PR #551 → see #555).
 EOF
 )
 
