@@ -511,7 +511,7 @@ if check_hot_loop "$kind" "$number"; then
   set_breeze_state "$REPO" "$number" human
 
   # Post explanatory comment on the issue/PR
-  local comment_body="**tick:**
+  comment_body="**tick:**
 
 Hot loop detected: $kind agent dispatched 3 times to this target with null outcome in the last 30 minutes.
 
