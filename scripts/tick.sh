@@ -6,7 +6,7 @@
 #   2. GitHub state — find the oldest open issue/PR without a fresh breeze:wip.
 #   3. If no unclaimed open items exist, project is finalized. Exit quietly.
 #
-# Invoked by launchd every 15 minutes.
+# Invoked by launchd every 5 minutes (StartInterval=300).
 
 set -euo pipefail
 
@@ -677,7 +677,7 @@ if [[ "${GIT_BEE_UI:-}" == "tmux" ]] && command -v tmux >/dev/null 2>&1 && tmux 
 
   # Create new window and run claude with the prompt file
   tmux new-window -t git-bee: -n "${kind}-#${number}" \
-    "cd '$REPO_ROOT' && '$CLAUDE_BIN' -p \"\$(cat '$prompt_file')\" --permission-mode bypassPermissions 2>&1 | tee -a '$LOG'; exit_code=\$?; rm -f '$prompt_file'; echo ''; echo \"Agent exited with code \$exit_code\"; '$REPO_ROOT/scripts/activity.sh' end '$REPO' '$kind' '$number' '$agent_id' \$exit_code \$(( SECONDS - $DISPATCH_START_TS )) 2>/dev/null || true; sleep 10; exit \$exit_code"
+    "cd '$REPO_ROOT' && '$CLAUDE_BIN' -p \"\$(cat '$prompt_file')\" --permission-mode bypassPermissions 2>&1 | tee -a '$LOG'; exit_code=\$?; rm -f '$prompt_file'; echo ''; echo \"Agent exited with code \$exit_code\"; '$REPO_ROOT/scripts/activity.sh' end '$REPO' '$kind' '$number' '$agent_id' \$exit_code \$(( SECONDS - $DISPATCH_START_TS )) 2>/dev/null || true; sleep 10; exec '$HERE/tick.sh'"
 
   # Run janitor to clean up old windows
   if [[ -x "$HERE/tmux-janitor.sh" ]]; then
@@ -694,10 +694,14 @@ else
     log "agent exited non-zero (${exit_code}) for #${number}"
     "$REPO_ROOT/scripts/activity.sh" end "$REPO" "$kind" "$number" "$agent_id" "$exit_code" "$(( SECONDS - DISPATCH_START_TS ))" 2>/dev/null || true
     notify "🐝 ${kind} failed" "#${number} exited ${exit_code} after $(( (SECONDS - DISPATCH_START_TS) / 60 ))m$(( (SECONDS - DISPATCH_START_TS) % 60 ))s"
-    exit "$exit_code"
+    # Self-trigger next tick for event-driven dispatch
+    exec "$HERE/tick.sh"
   }
 fi
 
 log "agent exited cleanly for #${number}"
 "$REPO_ROOT/scripts/activity.sh" end "$REPO" "$kind" "$number" "$agent_id" 0 "$(( SECONDS - DISPATCH_START_TS ))" 2>/dev/null || true
 notify "🐝 ${kind} done" "#${number} finished in $(( (SECONDS - DISPATCH_START_TS) / 60 ))m$(( (SECONDS - DISPATCH_START_TS) % 60 ))s"
+
+# Self-trigger next tick for event-driven dispatch
+exec "$HERE/tick.sh"
