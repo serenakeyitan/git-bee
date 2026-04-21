@@ -528,6 +528,14 @@ pick_target() {
         fi
       fi
     fi
+    # Guard: check if this issue already has an open PR linked to it
+    # If it does, skip dispatching drafter and log warning
+    local linked_pr
+    linked_pr=$(gh pr list --repo "$REPO" --state open --search "$n in:body" --json number --jq '.[0].number' 2>/dev/null || echo "")
+    if [[ -n "$linked_pr" ]]; then
+      log "ERROR: issue #$n already has open PR #$linked_pr linked to it — dispatcher should have picked PR for revision, not issue"
+      continue  # Skip to next issue
+    fi
     echo "drafter $n"
     return
   done
