@@ -14,6 +14,8 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$HERE/.." && pwd)"
 # shellcheck disable=SC1091
 source "$HERE/claim.sh"
+# shellcheck disable=SC1091
+source "$HERE/labels.sh"
 
 REPO="serenakeyitan/git-bee"
 LOCK="/tmp/git-bee-agent.pid"
@@ -95,8 +97,7 @@ EOF
       local new_issue_n
       new_issue_n=$(echo "$new_issue_url" | grep -oE '/issues/[0-9]+' | grep -oE '[0-9]+' || echo "")
       if [[ -n "$new_issue_n" ]]; then
-        # shellcheck disable=SC1091
-        source "$HERE/labels.sh" && set_breeze_state "$REPO" "$new_issue_n" human
+        set_breeze_state "$REPO" "$new_issue_n" human
       fi
     else
       log "WARNING: Could not find a known-good SHA in tick history"
@@ -223,8 +224,7 @@ pick_target() {
         design-conflicting)
           # Belt-and-suspenders: supervisor should have applied breeze:human,
           # but ensure it's labeled so this tick never re-dispatches.
-          # shellcheck disable=SC1091
-          source "$HERE/labels.sh" && set_breeze_state "$REPO" "$pr_n" human
+          set_breeze_state "$REPO" "$pr_n" human
           log "skip: #$pr_n design-conflicting — labeled breeze:human, held for human"
           ;;
         design-trivial|pass) : ;;  # handled elsewhere / nothing to do
