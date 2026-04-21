@@ -25,6 +25,37 @@ mkdir -p "$LOG_DIR"
 
 log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" | tee -a "$LOG"; }
 
+# macOS notification helper — no-op on non-Darwin / missing osascript
+notify() {
+  # Args: role, issue_number, status (done/failed), elapsed_seconds, [exit_code]
+  local role="$1"
+  local issue_number="$2"
+  local status="$3"
+  local elapsed_seconds="$4"
+  local exit_code="${5:-}"
+
+  # No-op if not on Darwin or osascript is missing
+  if [[ "$(uname)" != "Darwin" ]] || ! command -v osascript >/dev/null 2>&1; then
+    return 0
+  fi
+
+  # Format elapsed time as Xm Ys
+  local minutes=$((elapsed_seconds / 60))
+  local seconds=$((elapsed_seconds % 60))
+  local elapsed_str="${minutes}m ${seconds}s"
+
+  # Build notification message
+  local message
+  if [[ "$status" == "done" ]]; then
+    message="🐝 ${role} done · #${issue_number} finished in ${elapsed_str}"
+  else
+    message="🐝 ${role} failed · #${issue_number} exited ${exit_code} after ${elapsed_str}"
+  fi
+
+  # Send notification — never fail the tick if this fails
+  osascript -e "display notification \"$message\" with title \"git-bee\"" 2>/dev/null || true
+}
+
 # EXIT trap for tick history logging
 TICK_START_SHA=""
 record_tick_exit() {
@@ -472,9 +503,13 @@ log "spawning ${CLAUDE_BIN} for role=${kind} target=#${number}"
 "$CLAUDE_BIN" -p "$prompt" --permission-mode bypassPermissions 2>&1 | tee -a "$LOG" || {
   exit_code=$?
   log "agent exited non-zero (${exit_code}) for #${number}"
-  "$REPO_ROOT/scripts/activity.sh" end "$REPO" "$kind" "$number" "$agent_id" "$exit_code" "$(( SECONDS - DISPATCH_START_TS ))" 2>/dev/null || true
+  elapsed_seconds=$(( SECONDS - DISPATCH_START_TS ))
+  "$REPO_ROOT/scripts/activity.sh" end "$REPO" "$kind" "$number" "$agent_id" "$exit_code" "$elapsed_seconds" 2>/dev/null || true
+  notify "$kind" "$number" "failed" "$elapsed_seconds" "$exit_code"
   exit "$exit_code"
 }
 
 log "agent exited cleanly for #${number}"
-"$REPO_ROOT/scripts/activity.sh" end "$REPO" "$kind" "$number" "$agent_id" 0 "$(( SECONDS - DISPATCH_START_TS ))" 2>/dev/null || true
+elapsed_seconds=$(( SECONDS - DISPATCH_START_TS ))
+"$REPO_ROOT/scripts/activity.sh" end "$REPO" "$kind" "$number" "$agent_id" 0 "$elapsed_seconds" 2>/dev/null || true
+notify "$kind" "$number" "done" "$elapsed_seconds"
