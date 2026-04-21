@@ -665,13 +665,38 @@ notify() {
 
 log "spawning ${CLAUDE_BIN} for role=${kind} target=#${number}"
 "$REPO_ROOT/scripts/activity.sh" start "$REPO" "$kind" "$number" "$agent_id" 2>/dev/null || true
-"$CLAUDE_BIN" -p "$prompt" --permission-mode bypassPermissions 2>&1 | tee -a "$LOG" || {
-  exit_code=$?
-  log "agent exited non-zero (${exit_code}) for #${number}"
-  "$REPO_ROOT/scripts/activity.sh" end "$REPO" "$kind" "$number" "$agent_id" "$exit_code" "$(( SECONDS - DISPATCH_START_TS ))" 2>/dev/null || true
-  notify "🐝 ${kind} failed" "#${number} exited ${exit_code} after $(( (SECONDS - DISPATCH_START_TS) / 60 ))m$(( (SECONDS - DISPATCH_START_TS) % 60 ))s"
-  exit "$exit_code"
-}
+
+# Check for tmux UI mode
+if [[ "${GIT_BEE_UI:-}" == "tmux" ]] && command -v tmux >/dev/null 2>&1 && tmux has-session -t git-bee 2>/dev/null; then
+  # Dispatch to tmux window in existing git-bee session
+  log "dispatching ${kind} to tmux window '${kind}-#${number}'"
+
+  # Write prompt to temp file to avoid shell escaping issues
+  local prompt_file="/tmp/git-bee-prompt-${kind}-${number}.txt"
+  echo "$prompt" > "$prompt_file"
+
+  # Create new window and run claude with the prompt file
+  tmux new-window -t git-bee: -n "${kind}-#${number}" \
+    "cd '$REPO_ROOT' && '$CLAUDE_BIN' -p \"\$(cat '$prompt_file')\" --permission-mode bypassPermissions 2>&1 | tee -a '$LOG'; exit_code=\$?; rm -f '$prompt_file'; echo ''; echo \"Agent exited with code \$exit_code\"; '$REPO_ROOT/scripts/activity.sh' end '$REPO' '$kind' '$number' '$agent_id' \$exit_code \$(( SECONDS - $DISPATCH_START_TS )) 2>/dev/null || true; sleep 10; exit \$exit_code"
+
+  # Run janitor to clean up old windows
+  if [[ -x "$HERE/tmux-janitor.sh" ]]; then
+    "$HERE/tmux-janitor.sh" 2>/dev/null || true
+  fi
+
+  # Wait briefly to confirm dispatch succeeded
+  sleep 1
+  log "dispatched ${kind} in tmux window '${kind}-#${number}'"
+else
+  # Original headless mode
+  "$CLAUDE_BIN" -p "$prompt" --permission-mode bypassPermissions 2>&1 | tee -a "$LOG" || {
+    exit_code=$?
+    log "agent exited non-zero (${exit_code}) for #${number}"
+    "$REPO_ROOT/scripts/activity.sh" end "$REPO" "$kind" "$number" "$agent_id" "$exit_code" "$(( SECONDS - DISPATCH_START_TS ))" 2>/dev/null || true
+    notify "🐝 ${kind} failed" "#${number} exited ${exit_code} after $(( (SECONDS - DISPATCH_START_TS) / 60 ))m$(( (SECONDS - DISPATCH_START_TS) % 60 ))s"
+    exit "$exit_code"
+  }
+fi
 
 log "agent exited cleanly for #${number}"
 "$REPO_ROOT/scripts/activity.sh" end "$REPO" "$kind" "$number" "$agent_id" 0 "$(( SECONDS - DISPATCH_START_TS ))" 2>/dev/null || true
