@@ -136,9 +136,17 @@ cmd_step() {
   # Pattern matches: tests/e2e/verify.sh, ./tests/e2e/verify.sh, sh tests/e2e/verify.sh, bash tests/e2e/verify.sh
   # But NOT: echo tests/e2e/verify.sh, # tests/e2e/verify.sh, cat tests/e2e/verify.sh
   if [[ "$cmd" =~ ^(bash[[:space:]]+|sh[[:space:]]+|\./)?tests/e2e/verify\.sh([[:space:]]|$) ]]; then
-    # Extract PR number from .meta.json
+    # Extract PR number from .meta.json (created by cmd_create)
+    if [[ ! -f .meta.json ]]; then
+      echo "ERROR: .meta.json not found in sandbox. Was this sandbox created with 'e2e-sandbox.sh create'?" >&2
+      exit 1
+    fi
     local pr_number
     pr_number=$(jq -r '.pr_number' .meta.json)
+    if [[ -z "$pr_number" || "$pr_number" == "null" ]]; then
+      echo "ERROR: Could not extract pr_number from .meta.json" >&2
+      exit 1
+    fi
     # Use e2e-runner.sh for verify.sh execution
     # Find the e2e-runner.sh script relative to this script
     local script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
