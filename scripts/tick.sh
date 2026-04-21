@@ -56,7 +56,7 @@ pick_target() {
 
   local pr_basics
   pr_basics=$(gh pr list --repo "$REPO" --state open --search "sort:created-asc" --limit 50 \
-    --json number,reviewDecision,labels,reviews,comments 2>/dev/null || echo "[]")
+    --json number,reviewDecision,labels,reviews,comments,headRefOid 2>/dev/null || echo "[]")
   # Priority sort: priority:high first, then original (created-asc) order.
   pr_basics=$(echo "$pr_basics" | jq '[ .[] | . as $p | $p + {_prio: (if ($p.labels | map(.name) | index("priority:high")) then 0 else 1 end)} ] | sort_by(._prio) | map(del(._prio))')
 
@@ -66,13 +66,15 @@ pick_target() {
   local mergeable_prs
   mergeable_prs=$(echo "$pr_basics" | jq -r '
     .[]
+    | . as $pr
     | select(.labels | map(.name) | index("breeze:wip") | not)
     | select(.labels | map(.name) | index("breeze:human") | not)
     | select(
         .reviewDecision == "APPROVED"
         or any(.reviews[]?.body // ""; contains("<!-- bee:approved-for-e2e -->"))
       )
-    | select(any(.comments[]?.body // ""; contains("**E2E trace (pass)**")))
+    | select(any(.comments[]?.body // "";
+        (contains("**E2E trace (pass)**") and contains($pr.headRefOid[0:7]))))
     | .number
   ' 2>/dev/null || true)
   if [[ -n "$mergeable_prs" ]]; then
@@ -84,9 +86,11 @@ pick_target() {
   local traced_prs
   traced_prs=$(echo "$pr_basics" | jq -r '
     .[]
+    | . as $pr
     | select(.labels | map(.name) | index("breeze:wip") | not)
     | select(.labels | map(.name) | index("breeze:human") | not)
-    | select(any(.comments[]?.body // ""; contains("**E2E trace")))
+    | select(any(.comments[]?.body // "";
+        (contains("**E2E trace") and contains($pr.headRefOid[0:7]))))
     | select(any(.comments[]?.body // ""; contains("**E2E trace (pass)**")) | not)
     | select(any(.comments[]?.body // ""; contains("**e2e-supervisor:")) | not)
     | .number
@@ -134,13 +138,15 @@ pick_target() {
   local approved_prs
   approved_prs=$(echo "$pr_basics" | jq -r '
     .[]
+    | . as $pr
     | select(.labels | map(.name) | index("breeze:wip") | not)
     | select(.labels | map(.name) | index("breeze:human") | not)
     | select(
         .reviewDecision == "APPROVED"
         or any(.reviews[]?.body // ""; contains("<!-- bee:approved-for-e2e -->"))
       )
-    | select(any(.comments[]?.body // ""; contains("**E2E trace")) | not)
+    | select(any(.comments[]?.body // "";
+        (contains("**E2E trace") and contains($pr.headRefOid[0:7]))) | not)
     | .number
   ' 2>/dev/null || true)
   if [[ -n "$approved_prs" ]]; then
