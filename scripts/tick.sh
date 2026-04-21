@@ -14,6 +14,8 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$HERE/.." && pwd)"
 # shellcheck disable=SC1091
 source "$HERE/claim.sh"
+# shellcheck disable=SC1091
+source "$HERE/labels.sh"
 
 REPO="serenakeyitan/git-bee"
 LOCK="/tmp/git-bee-agent.pid"
@@ -86,10 +88,17 @@ The tick loop is now paused and will not dispatch agents until the ROLLBACK mark
 EOF
 )
 
-      gh issue create --repo "$REPO" \
+      # Create the issue and apply breeze:human via the labeling helper.
+      # We don't set priority:high — per AGENTS.md no auto-priority labels.
+      local new_issue_url
+      new_issue_url=$(gh issue create --repo "$REPO" \
         --title "Automatic rollback: 3 consecutive tick crashes detected" \
-        --body "$issue_body" \
-        --label "breeze:human,priority:high" 2>&1 | tee -a "$LOG" || true
+        --body "$issue_body" 2>&1 | tee -a "$LOG" | tail -1 || true)
+      local new_issue_n
+      new_issue_n=$(echo "$new_issue_url" | grep -oE '/issues/[0-9]+' | grep -oE '[0-9]+' || echo "")
+      if [[ -n "$new_issue_n" ]]; then
+        set_breeze_state "$REPO" "$new_issue_n" human
+      fi
     else
       log "WARNING: Could not find a known-good SHA in tick history"
     fi
@@ -232,7 +241,7 @@ pick_target() {
         design-conflicting)
           # Belt-and-suspenders: supervisor should have applied breeze:human,
           # but ensure it's labeled so this tick never re-dispatches.
-          gh issue edit "$pr_n" --repo "$REPO" --add-label "breeze:human" >/dev/null 2>&1 || true
+          set_breeze_state "$REPO" "$pr_n" human
           log "skip: #$pr_n design-conflicting — labeled breeze:human, held for human"
           ;;
         design-trivial|pass) : ;;  # handled elsewhere / nothing to do
