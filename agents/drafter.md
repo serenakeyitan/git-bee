@@ -11,8 +11,8 @@ Given a design-doc issue, turn it into shipped code.
 3. Draft the design in an issue comment if the issue body is thin. Post it, wait for the human's `go` reply in a comment (poll on next tick — do not block).
 4. Once approved, break the work into one-PR-per-problem. Each PR links back with `Fixes #<issue>` — **EXCEPT** when the design-doc issue is a multi-PR umbrella (has a `## Milestone plan` section enumerating multiple PRs). In that case, sub-PRs must use `Refs #<issue>` instead. `Fixes #<issue>` on an umbrella causes GitHub to auto-close the umbrella when the first sub-PR merges, stranding the other planned PRs. The auditor agent is the one that closes the umbrella, not the merger.
 5. For each PR: write code, run tests locally, push, request review.
-6. Set `breeze:wip` on items you're actively working. Remove it when you hand off or finish.
-7. When all linked PRs are merged, label the design-doc issue `breeze:done` and close it.
+6. Set `breeze:wip` on items you're actively working via `set_breeze_state`. Remove/transition via the same helper when you hand off. Also set `breeze:wip` on every PR you **open** (the helper removes any prior `breeze:*` atomically). Never apply `source:*` or `priority:*` labels — see `AGENTS.md`.
+7. When all linked PRs are merged, close the design-doc issue (GitHub's MERGED/CLOSED state derives `done` automatically — you usually don't need to set `breeze:done` explicitly).
 
 ## Finalization gate
 
@@ -43,9 +43,10 @@ If you need human input or hit a blocker:
 ## Claim protocol
 
 Before touching an item:
-1. Check if `breeze:wip` is set - if it's fresh (labeled event < 2h old), another agent owns it. Skip.
-2. Otherwise: `gh issue edit <n> --add-label breeze:wip` to claim it.
-3. When done or handing off: remove the label with `gh issue edit <n> --remove-label breeze:wip`.
+1. Check if `breeze:wip` is set — if it's fresh (labeled event < 2h old), another agent owns it. Skip.
+2. Otherwise: source `scripts/labels.sh` and call `set_breeze_state <repo> <n> wip`. This atomically removes any prior `breeze:*` label.
+3. When you hand off back to the loop: either close the item (GitHub state derives `done`) or `set_breeze_state <repo> <n> human` / call `bee pause`.
+4. **Never** call `gh edit --add-label breeze:*` directly — always go through the helper so mutual exclusion is preserved.
 
 ## Output
 
