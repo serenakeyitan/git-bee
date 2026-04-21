@@ -125,6 +125,23 @@ if [[ -f "$LOCK" ]]; then
   rm -f "$LOCK"
 fi
 
+# Guard 1b: reset working tree to origin/main.
+# ~/git-bee is shared state between the cron and the running agents. Agents
+# check out feature branches to do drafter/merger work and sometimes exit
+# without restoring main. The next tick would then run whatever scripts are
+# on that feature branch — which may be a buggy older version. On 2026-04-20
+# this caused notification-scanner to create 127 junk issues (#576–#702).
+# The lock guard above proves no agent is running, so it's safe to checkout.
+if git -C "$REPO_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  current_branch=$(git -C "$REPO_ROOT" symbolic-ref --short -q HEAD 2>/dev/null || echo "DETACHED")
+  if [[ "$current_branch" != "main" ]]; then
+    log "working tree on '$current_branch', resetting to origin/main"
+  fi
+  git -C "$REPO_ROOT" fetch origin main --quiet 2>/dev/null || true
+  git -C "$REPO_ROOT" checkout main --quiet 2>/dev/null || true
+  git -C "$REPO_ROOT" reset --hard origin/main --quiet 2>/dev/null || true
+fi
+
 # Run notification scanner after the lock guard. No-op by default (empty
 # watchlist); only fires for repos the user explicitly added via `bee watch`.
 if [[ -x "$HERE/notification-scanner.sh" ]]; then
