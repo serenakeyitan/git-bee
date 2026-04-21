@@ -239,6 +239,7 @@ pick_target() {
     | select(
         .reviewDecision == "APPROVED"
         or any(.reviews[]?.body // ""; contains("<!-- bee:approved-for-e2e -->"))
+        or any(.comments[]?.body // ""; contains("<!-- bee:approved-for-e2e -->"))
       )
     | select(any(.comments[]?.body // ""; contains("**E2E trace (pass)**")))
     | .number
@@ -313,6 +314,7 @@ pick_target() {
     | select(
         .reviewDecision == "APPROVED"
         or any(.reviews[]?.body // ""; contains("<!-- bee:approved-for-e2e -->"))
+        or any(.comments[]?.body // ""; contains("<!-- bee:approved-for-e2e -->"))
       )
     | select(any(.comments[]?.body // ""; contains("**E2E trace")) | not)
     | .number
