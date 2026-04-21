@@ -442,6 +442,50 @@ pick_target() {
   done
 }
 
+# Hot loop detector — check if the same agent has been dispatched N times
+# with exit_code=0 and outcome=null to the same target within a time window.
+# Returns 0 if hot loop detected (should skip dispatch), 1 otherwise.
+check_hot_loop() {
+  local agent="$1" number="$2"
+  local threshold=3 window_minutes=30
+  local activity_log="${LOG_DIR}/activity.ndjson"
+
+  # No activity log means no hot loop
+  [[ ! -f "$activity_log" ]] && return 1
+
+  # Time window: now - 30 minutes
+  local now_ts=$(date +%s)
+  local window_start=$((now_ts - window_minutes * 60))
+
+  # Count consecutive runs with exit_code=0 and outcome=null for this agent+target
+  # within the time window. jq filters:
+  # 1. Event type = "end"
+  # 2. Agent matches
+  # 3. Target matches (#N)
+  # 4. exit_code = 0
+  # 5. outcome = null
+  # 6. timestamp within window
+  local count
+  count=$(jq -r --arg agent "$agent" \
+    --arg target "#${number}" \
+    --arg window_start "$window_start" \
+    'select(.event == "end" and
+            .agent == $agent and
+            .target == $target and
+            .exit_code == 0 and
+            .outcome == null) |
+     .ts | fromdateiso8601 |
+     select(. >= ($window_start | tonumber))' \
+    "$activity_log" 2>/dev/null | wc -l | xargs)
+
+  if [[ "$count" -ge "$threshold" ]]; then
+    log "HOT LOOP detected: $agent dispatched $count times to #$number with null outcome in ${window_minutes}min"
+    return 0
+  fi
+
+  return 1
+}
+
 target=$(pick_target)
 
 if [[ -z "$target" ]]; then
@@ -460,6 +504,27 @@ fi
 
 kind="${target%% *}"
 number="${target##* }"
+
+# Check for hot loop before dispatching
+if check_hot_loop "$kind" "$number"; then
+  # Apply breeze:human label to break the loop
+  set_breeze_state "$REPO" "$number" human
+
+  # Post explanatory comment on the issue/PR
+  comment_body="**tick:**
+
+Hot loop detected: $kind agent dispatched 3 times to this target with null outcome in the last 30 minutes.
+
+Applied \`breeze:human\` label to prevent further automatic dispatches. Human intervention required to investigate why the agent is not posting an outcome marker.
+
+Check \`~/.git-bee/activity.ndjson\` for dispatch history."
+
+  gh issue comment "$number" --repo "$REPO" --body "$comment_body" 2>&1 | tee -a "$LOG" || true
+
+  log "skip: hot loop detected for $kind on #$number — labeled breeze:human"
+  exit 0
+fi
+
 log "dispatch: kind=$kind target=#$number"
 DISPATCH_START_TS=$SECONDS
 
