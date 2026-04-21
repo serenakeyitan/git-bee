@@ -51,6 +51,9 @@ Usage:
   bee watch remove <owner/repo>  Remove a repo from the watchlist
   bee watch pause        Disable scanner without losing watchlist
   bee watch resume       Re-enable scanner
+  bee exclude list       Show excluded repos (deny-list)
+  bee exclude add <owner/repo>    Add a repo to the exclude list
+  bee exclude remove <owner/repo> Remove a repo from the exclude list
 
 Exit codes:
   0  agent idle or running cleanly
@@ -627,6 +630,62 @@ cmd_watch() {
   esac
 }
 
+cmd_exclude() {
+  local action="${1:-list}"
+  shift || true
+
+  mkdir -p "$(dirname "$CONFIG_FILE")"
+  # Bootstrap config via cmd_config's default template if missing.
+  if [[ ! -f "$CONFIG_FILE" ]]; then
+    cmd_config get >/dev/null
+  fi
+
+  local repo
+  case "$action" in
+    list)
+      local count
+      count=$(jq -r '(.watch.exclude_repos // []) | length' "$CONFIG_FILE")
+      if (( count == 0 )); then
+        echo "exclude list: empty"
+        echo "  (no excluded repos — add one with: bee exclude add <owner/repo>)"
+      else
+        echo "exclude list:"
+        jq -r '.watch.exclude_repos[]' "$CONFIG_FILE" | sed 's/^/  - /'
+      fi
+      ;;
+    add)
+      repo="${1:-}"
+      if [[ -z "$repo" ]] || ! [[ "$repo" =~ ^[^/]+/[^/]+$ ]]; then
+        echo "bee exclude add: need owner/repo" >&2
+        exit 2
+      fi
+      jq --arg r "$repo" '
+        .watch //= {enabled: false, repos: []}
+        | .watch.exclude_repos //= []
+        | if (.watch.exclude_repos | index($r)) then . else .watch.exclude_repos += [$r] end
+      ' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
+      echo "bee exclude: added ${repo} to deny-list"
+      ;;
+    remove)
+      repo="${1:-}"
+      if [[ -z "$repo" ]]; then
+        echo "bee exclude remove: need owner/repo" >&2
+        exit 2
+      fi
+      jq --arg r "$repo" '
+        .watch //= {enabled: false, repos: []}
+        | .watch.exclude_repos = ((.watch.exclude_repos // []) - [$r])
+      ' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
+      echo "bee exclude: removed ${repo} from deny-list"
+      ;;
+    *)
+      echo "bee exclude: unknown action: $action" >&2
+      echo "usage: bee exclude add|remove|list [owner/repo]" >&2
+      exit 2
+      ;;
+  esac
+}
+
 cmd_log() {
   local activity_log="$HOME/.git-bee/activity.ndjson"
   if [[ ! -f "$activity_log" ]]; then
@@ -754,6 +813,7 @@ main() {
     pause)        cmd_pause "$@" ;;
     config)       cmd_config "$@" ;;
     watch)        cmd_watch "$@" ;;
+    exclude)      cmd_exclude "$@" ;;
     help|-h|--help) usage ;;
     *) echo "bee: unknown command: $cmd" >&2; usage >&2; exit 2 ;;
   esac

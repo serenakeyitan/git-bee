@@ -50,6 +50,7 @@ _migrate_if_legacy() {
           watch: {
             enabled: (($in.scope // "exclusion") == "curated" and (($in.include_repos // []) | length) > 0),
             repos: ($in.include_repos // []),
+            exclude_repos: ($in.exclude_repos // []),
             classify_as_needs_fix: ["review_requested", "assign", "mention", "team_mention"],
             per_repo_ceiling: 5,
             global_ceiling: 20
@@ -63,12 +64,14 @@ _migrate_if_legacy
 if [[ -f "$CONFIG_FILE" ]]; then
     WATCH_ENABLED=$(jq -r '.watch.enabled // false' "$CONFIG_FILE")
     WATCH_REPOS=$(jq -r '(.watch.repos // [])[]' "$CONFIG_FILE" 2>/dev/null || true)
+    EXCLUDE_REPOS=$(jq -r '(.watch.exclude_repos // [])[]' "$CONFIG_FILE" 2>/dev/null || true)
     NEEDS_FIX_REASONS=$(jq -r '(.watch.classify_as_needs_fix // ["review_requested","assign","mention","team_mention"])[]' "$CONFIG_FILE" 2>/dev/null)
     PER_REPO_CEILING=$(jq -r '.watch.per_repo_ceiling // 5' "$CONFIG_FILE")
     GLOBAL_CEILING=$(jq -r '.watch.global_ceiling // 20' "$CONFIG_FILE")
 else
     WATCH_ENABLED="false"
     WATCH_REPOS=""
+    EXCLUDE_REPOS=""
     NEEDS_FIX_REASONS="review_requested
 assign
 mention
@@ -99,6 +102,15 @@ is_watched() {
         [[ -z "$w" ]] && continue
         [[ "$repo" == "$w" ]] && return 0
     done <<< "$WATCH_REPOS"
+    return 1
+}
+
+is_excluded() {
+    local repo="$1"
+    while IFS= read -r e; do
+        [[ -z "$e" ]] && continue
+        [[ "$repo" == "$e" ]] && return 0
+    done <<< "$EXCLUDE_REPOS"
     return 1
 }
 
@@ -201,6 +213,7 @@ ${r}	${c}"
         [[ -n "$subject_url" ]] && number=$(echo "$subject_url" | grep -oE '[0-9]+$' || echo "")
 
         is_watched "$repo" || continue
+        is_excluded "$repo" && continue
         is_needs_fix "$reason" || continue
         [[ -z "$number" ]] && continue
 
