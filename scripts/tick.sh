@@ -6,7 +6,7 @@
 #   2. GitHub state — find the oldest open issue/PR without a fresh breeze:wip.
 #   3. If no unclaimed open items exist, project is finalized. Exit quietly.
 #
-# Invoked by launchd every 15 minutes.
+# Invoked by launchd every 5 minutes (StartInterval=300).
 
 set -euo pipefail
 
@@ -676,8 +676,9 @@ if [[ "${GIT_BEE_UI:-}" == "tmux" ]] && command -v tmux >/dev/null 2>&1 && tmux 
   echo "$prompt" > "$prompt_file"
 
   # Create new window and run claude with the prompt file
+  # Note: self-triggering happens at the end of the tmux command via tick.sh call
   tmux new-window -t git-bee: -n "${kind}-#${number}" \
-    "cd '$REPO_ROOT' && '$CLAUDE_BIN' -p \"\$(cat '$prompt_file')\" --permission-mode bypassPermissions 2>&1 | tee -a '$LOG'; exit_code=\$?; rm -f '$prompt_file'; echo ''; echo \"Agent exited with code \$exit_code\"; '$REPO_ROOT/scripts/activity.sh' end '$REPO' '$kind' '$number' '$agent_id' \$exit_code \$(( SECONDS - $DISPATCH_START_TS )) 2>/dev/null || true; sleep 10; exit \$exit_code"
+    "cd '$REPO_ROOT' && '$CLAUDE_BIN' -p \"\$(cat '$prompt_file')\" --permission-mode bypassPermissions 2>&1 | tee -a '$LOG'; exit_code=\$?; rm -f '$prompt_file'; echo ''; echo \"Agent exited with code \$exit_code\"; '$REPO_ROOT/scripts/activity.sh' end '$REPO' '$kind' '$number' '$agent_id' \$exit_code \$(( SECONDS - $DISPATCH_START_TS )) 2>/dev/null || true; sleep 2; echo 'Self-triggering next tick (issue #724)'; '$HERE/tick.sh' 2>&1 | tail -5; sleep 3; exit \$exit_code"
 
   # Run janitor to clean up old windows
   if [[ -x "$HERE/tmux-janitor.sh" ]]; then
@@ -687,6 +688,7 @@ if [[ "${GIT_BEE_UI:-}" == "tmux" ]] && command -v tmux >/dev/null 2>&1 && tmux 
   # Wait briefly to confirm dispatch succeeded
   sleep 1
   log "dispatched ${kind} in tmux window '${kind}-#${number}'"
+  # Don't self-trigger here since tmux window will handle it
 else
   # Original headless mode
   "$CLAUDE_BIN" -p "$prompt" --permission-mode bypassPermissions 2>&1 | tee -a "$LOG" || {
@@ -694,10 +696,19 @@ else
     log "agent exited non-zero (${exit_code}) for #${number}"
     "$REPO_ROOT/scripts/activity.sh" end "$REPO" "$kind" "$number" "$agent_id" "$exit_code" "$(( SECONDS - DISPATCH_START_TS ))" 2>/dev/null || true
     notify "🐝 ${kind} failed" "#${number} exited ${exit_code} after $(( (SECONDS - DISPATCH_START_TS) / 60 ))m$(( (SECONDS - DISPATCH_START_TS) % 60 ))s"
-    exit "$exit_code"
+
+    # Self-trigger the next tick even on failure (issue #724)
+    log "self-triggering next tick after agent failure"
+    exec "$HERE/tick.sh"
   }
 fi
 
 log "agent exited cleanly for #${number}"
 "$REPO_ROOT/scripts/activity.sh" end "$REPO" "$kind" "$number" "$agent_id" 0 "$(( SECONDS - DISPATCH_START_TS ))" 2>/dev/null || true
 notify "🐝 ${kind} done" "#${number} finished in $(( (SECONDS - DISPATCH_START_TS) / 60 ))m$(( (SECONDS - DISPATCH_START_TS) % 60 ))s"
+
+# Self-trigger the next tick (issue #724: reduce latency between agent-done and next-agent-start)
+# The PID lock ensures at-most-one concurrent agent, making this safe.
+# We exec to replace this process, avoiding a recursive call stack.
+log "self-triggering next tick after agent completion"
+exec "$HERE/tick.sh"
