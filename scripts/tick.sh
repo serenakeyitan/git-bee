@@ -464,7 +464,7 @@ log "spawning ${CLAUDE_BIN} for role=${kind} target=#${number}"
   exit_code=$?
   log "agent exited non-zero (${exit_code}) for #${number}"
   "$REPO_ROOT/scripts/activity.sh" end "$REPO" "$kind" "$number" "$agent_id" "$exit_code" "$(( SECONDS - DISPATCH_START_TS ))" 2>/dev/null || true
-  notify "🐝 ${kind} failed" "#${number} exited ${exit_code} after $(( (SECONDS - DISPATCH_START_TS) / 60 ))m"
+  notify "🐝 ${kind} failed" "#${number} exited ${exit_code} after $(( (SECONDS - DISPATCH_START_TS) / 60 ))m$(( (SECONDS - DISPATCH_START_TS) % 60 ))s"
   exit "$exit_code"
 }
 
