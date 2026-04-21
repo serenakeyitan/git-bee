@@ -99,6 +99,10 @@ pick_target() {
   # 1b'. PRs with a supervisor verdict — route based on the verdict. The
   # `pass` verdict is covered by the approved+E2E-trace-pass route above,
   # so here we only need to handle the five non-pass outcomes.
+  #
+  # A verdict is STALE if drafter or e2e has posted a comment after it — that
+  # means the bug was already addressed and we need a fresh E2E run to judge
+  # the new state, not to re-trigger the same role on every tick (hot-loop).
   local supervised
   supervised=$(echo "$pr_basics" | jq -r '
     .[]
@@ -108,6 +112,8 @@ pick_target() {
     | ([$pr.comments[]? | select(.body // "" | test("\\*\\*e2e-supervisor: (pass|lazy-run|code-bug|test-bug|design-trivial|design-conflicting)\\*\\*"))]
         | sort_by(.createdAt) | last) as $v
     | select($v != null)
+    | ([$pr.comments[]? | select(.createdAt > $v.createdAt) | select(.body // "" | test("^\\*\\*(drafter|e2e):"))] | length) as $followups
+    | select($followups == 0)
     | ($v.body | capture("\\*\\*e2e-supervisor: (?<verdict>pass|lazy-run|code-bug|test-bug|design-trivial|design-conflicting)\\*\\*").verdict) as $vd
     | "\($pr.number) \($vd)"
   ' 2>/dev/null || true)
