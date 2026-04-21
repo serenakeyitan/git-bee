@@ -450,14 +450,24 @@ auto-close the PR without merging it. This happened on PR #551 — see #555.
 PROMPT_EOF
 )
 
+# macOS notifier — no-op on non-Darwin or if osascript is missing. Never
+# fails the tick (|| true at call sites).
+notify() {
+  command -v osascript >/dev/null 2>&1 || return 0
+  local title="$1" body="$2"
+  osascript -e "display notification \"${body//\"/\\\"}\" with title \"${title//\"/\\\"}\"" >/dev/null 2>&1 || true
+}
+
 log "spawning ${CLAUDE_BIN} for role=${kind} target=#${number}"
 "$REPO_ROOT/scripts/activity.sh" start "$REPO" "$kind" "$number" "$agent_id" 2>/dev/null || true
 "$CLAUDE_BIN" -p "$prompt" --permission-mode bypassPermissions 2>&1 | tee -a "$LOG" || {
   exit_code=$?
   log "agent exited non-zero (${exit_code}) for #${number}"
   "$REPO_ROOT/scripts/activity.sh" end "$REPO" "$kind" "$number" "$agent_id" "$exit_code" "$(( SECONDS - DISPATCH_START_TS ))" 2>/dev/null || true
+  notify "🐝 ${kind} failed" "#${number} exited ${exit_code} after $(( (SECONDS - DISPATCH_START_TS) / 60 ))m"
   exit "$exit_code"
 }
 
 log "agent exited cleanly for #${number}"
 "$REPO_ROOT/scripts/activity.sh" end "$REPO" "$kind" "$number" "$agent_id" 0 "$(( SECONDS - DISPATCH_START_TS ))" 2>/dev/null || true
+notify "🐝 ${kind} done" "#${number} finished in $(( (SECONDS - DISPATCH_START_TS) / 60 ))m$(( (SECONDS - DISPATCH_START_TS) % 60 ))s"
