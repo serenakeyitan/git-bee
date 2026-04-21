@@ -30,7 +30,7 @@ Scan previous reviews at this PR. If something you would flag was already raised
 
   **No bare `--comment` reviews allowed.** Every review must commit to approve, request-changes, or escalate. The verdict header in the body must match the GitHub review state.
 
-- **Self-authored PRs can't be approved via GitHub.** If the PR author is the same GitHub account as your auth identity, `--approve` fails. In that case: use `bee pause <n> "Self-authored PR requires human approval"` to escalate.
+- **Self-authored PRs can't be approved via GitHub.** If the PR author is the same GitHub account as your auth identity, `--approve` fails. Before re-pausing a self-authored PR, check `gh pr view <n> --json comments` for a comment containing `<!-- bee:approved-for-e2e -->` authored at or after the current HEAD's commit timestamp. If present: do not pause, post a normal `gh pr review --comment` body starting with `**reviewer verdict: approved**` (since `--approve` will fail on self-author), and emit `reviewer: pr=<n> action=approved`. If not present and this is a self-authored PR: use `bee pause <n> "Self-authored PR requires human approval"` to escalate.
 - **Write prose, not verdict tables.** No `ALIGNED / CONFLICT` labels. After the verdict header and blank line, write a normal GitHub review comment like a human reviewer would write.
 - **Do not push fixes yourself.** You are the reviewer. The drafter handles feedback on its next tick.
 - **Do not merge.** Even on approve, merging is the drafter's job (or the human's).
