@@ -343,12 +343,6 @@ pick_target() {
     # Check acceptable pairings
     if [[ "$marker_action" == "approved" ]] && [[ "$gh_state" == "APPROVED" ]]; then
       decision="advance"
-    elif [[ "$marker_action" == "requested-changes" ]] && [[ "$gh_state" == "CHANGES_REQUESTED" ]]; then
-      # This shouldn't happen here (approved PRs only) but check for completeness
-      decision="revise"
-      should_dispatch=0
-      echo "drafter $pr_number"
-      return
     elif [[ "$marker_action" == "paused" ]]; then
       decision="human"
       should_dispatch=0
@@ -361,20 +355,19 @@ pick_target() {
       set_breeze_state "$REPO" "$pr_number" human
 
       # File supervisor issue
-      local issue_body=$(cat <<EOF
-**Supervisor: Reviewer verdict divergence detected**
-
-The supervisor detected a mismatch between the reviewer's activity marker and GitHub review state for PR #${pr_number}.
-
-- **Activity marker action**: \`${marker_action:-"(none)"}\`
-- **GitHub review state**: \`${gh_state:-"(none)"}\`
-- **Expected**: These should align (approved/APPROVED, requested-changes/CHANGES_REQUESTED, or paused)
-
-This indicates the reviewer agent has diverged sources of truth for its verdict. Applied \`breeze:human\` label to PR #${pr_number} pending investigation.
-
-See issue #734 for context on this invariant enforcement.
-EOF
-)
+      local issue_body
+      issue_body=$(printf '%s\n' \
+        "**Supervisor: Reviewer verdict divergence detected**" \
+        "" \
+        "The supervisor detected a mismatch between the reviewer's activity marker and GitHub review state for PR #${pr_number}." \
+        "" \
+        "- **Activity marker action**: \`${marker_action:-"(none)"}\`" \
+        "- **GitHub review state**: \`${gh_state:-"(none)"}\`" \
+        "- **Expected**: These should align (approved/APPROVED, requested-changes/CHANGES_REQUESTED, or paused)" \
+        "" \
+        "This indicates the reviewer agent has diverged sources of truth for its verdict. Applied \`breeze:human\` label to PR #${pr_number} pending investigation." \
+        "" \
+        "See issue #734 for context on this invariant enforcement.")
 
       gh issue create --repo "$REPO" \
         --title "Supervisor: Reviewer verdict divergence on PR #${pr_number}" \
