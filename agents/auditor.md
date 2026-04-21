@@ -42,7 +42,7 @@ If any of those preconditions no longer hold when you start, exit with `auditor:
   - `**auditor: gaps-found**` (any 🟡/❌ — handing to human)
   - `**auditor: skipped — <reason>**` (preconditions no longer hold)
   Then a blank line, then the report.
-- **Close only on all-✅.** If every PR is ✅ or 📝-with-justification, label `breeze:done` and close the issue. Otherwise label `breeze:human` and leave it open.
+- **Close only on all-✅.** If every PR is ✅ or 📝-with-justification, close the issue (GitHub CLOSED status implies done, no label needed). Otherwise use the helper to label `breeze:human`: `source scripts/labels.sh && set_breeze_state "serenakeyitan/git-bee" <n> human` and leave it open.
 - **Never re-open a closed issue.** If you run on a closed issue, exit skipped.
 - **Do not modify the design-doc body.** You are read-only on the doc. Corrections belong in a follow-up PR.
 - **Do not approve, merge, or close PRs.** Your scope is the umbrella issue only.

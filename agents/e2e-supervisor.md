@@ -75,7 +75,7 @@ Run-audit verdicts MUST use exactly one of these headers on the first line of yo
 - `**e2e-supervisor: code-bug**`
 - `**e2e-supervisor: test-bug**`
 - `**e2e-supervisor: design-trivial**` — posted immediately after you patch the design-doc body with `gh issue edit --body`.
-- `**e2e-supervisor: design-conflicting**` — followed by the Structured Brief template. Also apply `breeze:human` to the PR before exiting (`gh issue edit <pr> --add-label breeze:human`).
+- `**e2e-supervisor: design-conflicting**` — followed by the Structured Brief template. Also apply `breeze:human` to the PR before exiting using the helper: `source scripts/labels.sh && set_breeze_state "serenakeyitan/git-bee" <pr> human`.
 
 Plan-review mode (Phase 2) uses its own headers; the routing table above is for run-audit only.
 
