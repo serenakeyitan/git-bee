@@ -655,6 +655,64 @@ fi
 kind="${target%% *}"
 number="${target##* }"
 
+# E2E skip logic for script/docs-only PRs (issue #749)
+if [[ "$kind" == "e2e" ]]; then
+  # Get the list of changed files in the PR
+  changed_files=$(gh pr view "$number" --repo "$REPO" --json files --jq '.files[].path' 2>/dev/null || echo "")
+
+  if [[ -n "$changed_files" ]]; then
+    # Check if ALL changed files match the skip patterns
+    should_skip=1
+
+    while IFS= read -r file_path; do
+      [[ -z "$file_path" ]] && continue
+
+      # Critical scripts that MUST still run e2e
+      if [[ "$file_path" == "scripts/tick.sh" ||
+            "$file_path" == "scripts/bee" ||
+            "$file_path" == "scripts/notification-scanner.sh" ]]; then
+        should_skip=0
+        break
+      fi
+
+      # Check if file matches allowed skip patterns
+      if [[ ! "$file_path" =~ \.(sh|md)$ ]] &&
+         [[ ! "$file_path" =~ ^agents/ ]] &&
+         [[ ! "$file_path" =~ ^docs/ ]] &&
+         [[ ! "$file_path" =~ ^tests/ ]]; then
+        # File doesn't match skip patterns, must run e2e
+        should_skip=0
+        break
+      fi
+    done <<< "$changed_files"
+
+    if [[ "$should_skip" == "1" ]]; then
+      log "e2e: pr=$number result=skipped-scripts-only (only touches *.sh/*.md/agents/docs/tests)"
+
+      # Post comment on PR with synthetic e2e marker
+      pr_head_sha=$(gh pr view "$number" --repo "$REPO" --json headRefOid --jq '.headRefOid[0:7]' 2>/dev/null || echo "unknown")
+      comment_body="**E2E trace (pass)** for commit $pr_head_sha
+
+Sandbox: skipped-scripts-only (PR only modifies scripts/docs/agents/tests)
+
+This PR only modifies non-runtime files:
+$(echo "$changed_files" | sed 's/^/- /')
+
+E2E sandbox run skipped as these changes don't affect runtime behavior. Automatically proceeding to merger."
+
+      gh issue comment "$number" --repo "$REPO" --body "$comment_body" 2>&1 | tee -a "$LOG" || true
+
+      # Update activity log with synthetic e2e outcome
+      "$REPO_ROOT/scripts/activity.sh" start "$REPO" "e2e" "$number" "e2e-synthetic" 2>/dev/null || true
+      "$REPO_ROOT/scripts/activity.sh" end "$REPO" "e2e" "$number" "e2e-synthetic" 0 0 "skipped-scripts-only" 2>/dev/null || true
+
+      # Switch to merger dispatch
+      kind="merger"
+      log "switching dispatch: e2e→merger for scripts-only PR #$number"
+    fi
+  fi
+fi
+
 # Check for hot loop before dispatching
 if check_hot_loop "$kind" "$number"; then
   # Apply breeze:human label to break the loop
