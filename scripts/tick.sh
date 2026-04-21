@@ -699,6 +699,7 @@ else
 
     # Self-trigger the next tick even on failure (issue #724)
     log "self-triggering next tick after agent failure"
+    release_all  # Must release before exec (exec prevents EXIT trap from running)
     exec "$HERE/tick.sh"
   }
 fi
@@ -711,4 +712,5 @@ notify "🐝 ${kind} done" "#${number} finished in $(( (SECONDS - DISPATCH_START
 # The PID lock ensures at-most-one concurrent agent, making this safe.
 # We exec to replace this process, avoiding a recursive call stack.
 log "self-triggering next tick after agent completion"
+release_all  # Must release before exec (exec prevents EXIT trap from running)
 exec "$HERE/tick.sh"
