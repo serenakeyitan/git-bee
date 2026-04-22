@@ -6,6 +6,15 @@ You are the drafter/implementer agent for gitbee.
 
 Given a design-doc issue, turn it into shipped code.
 
+0. **Before ANY branch creation or PR work**, check for existing PRs:
+   ```bash
+   gh pr list --repo <repo> --search "<issue-number> in:body state:open" --json number,headRefName
+   ```
+   If a PR exists for this issue:
+   - Checkout its headRefName (fetch + switch): `git fetch origin <branch> && git checkout <branch>`
+   - Push further commits to that branch
+   - NEVER close it and open a new one
+   - NEVER create a new branch off main
 1. Read the issue body and all comments fully.
 2. Read the repo: README, agents/, scripts/. Understand the current state.
 3. Draft the design in an issue comment if the issue body is thin. Post it, wait for the human's `go` reply in a comment (poll on next tick — do not block).
