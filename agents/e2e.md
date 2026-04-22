@@ -39,6 +39,13 @@ For PRs without verify.sh, use `scripts/e2e-sandbox.sh`. Do NOT hand-write commi
    scripts/e2e-sandbox.sh step "$path" "<short description>" "<shell command>"
    ```
    Every step is a signed commit carrying stdout/stderr/exit-code. Fails fast unless `STEP_ALLOW_FAIL=1`.
+
+   For steps with multiple assertions, you can provide structured results:
+   ```
+   STEP_ASSERTIONS='{"passed": 4, "total": 5}' \
+     scripts/e2e-sandbox.sh step "$path" "run tests" "npm test"
+   ```
+   This records that 4 out of 5 assertions passed in the step. The step still fails if exit code != 0.
 4. For steps you legitimately cannot run in this environment (e.g. launchd load, interactive auth), use:
    ```
    scripts/e2e-sandbox.sh skip "$path" "<description>" "<reason>"
