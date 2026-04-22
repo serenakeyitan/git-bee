@@ -59,12 +59,30 @@ test_missing_verify() {
   return 0
 }
 
+# Test (d): RESULT.json generation
+test_result_json() {
+  echo ""
+  echo "Test (d): RESULT.json generation on finalize"
+  echo "--------------------------------------------"
+
+  # Run the dedicated test script
+  if bash "$(dirname "$0")/test-result-json.sh" >/dev/null 2>&1; then
+    echo "✅ Test (d) passed: RESULT.json generated with correct structure"
+  else
+    echo "❌ Test (d) failed: RESULT.json generation error"
+    return 1
+  fi
+
+  return 0
+}
+
 # Run all tests
 test_ndjson_capture
 test_atomic_write
 test_missing_verify
+test_result_json
 
 echo ""
 echo "================================="
-echo "All e2e-runner.sh tests completed successfully!"
+echo "All e2e tests completed successfully!"
 exit 0

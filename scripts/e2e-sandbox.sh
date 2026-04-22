@@ -69,6 +69,71 @@ _next_step_num() {
   printf "%02d" $((10#${last:-00} + 1))
 }
 
+_generate_result_json() {
+  local sandbox_path="$1" pr_number="$2" short_sha="$3" status="$4" reason="$5"
+  local result_json="$sandbox_path/RESULT.json"
+
+  # Calculate duration from first to last commit
+  local first_ts last_ts duration_ms
+  first_ts=$(git -C "$sandbox_path" log --reverse --format='%ct' | head -1)
+  last_ts=$(date +%s)
+  duration_ms=$(( (last_ts - first_ts) * 1000 ))
+
+  # Build steps array from the steps directory
+  local steps_json="[]"
+  if [[ -d "$sandbox_path/steps" ]]; then
+    steps_json=$(
+      for step_dir in $(ls -d "$sandbox_path/steps"/step-* 2>/dev/null | sort -V); do
+        local step_num step_desc exit_code skipped assertions_json
+        step_num=$(basename "$step_dir" | sed 's/step-//')
+        step_desc=$(cat "$step_dir/description" 2>/dev/null || echo "")
+        exit_code=$(cat "$step_dir/exit-code" 2>/dev/null || echo "0")
+        skipped=false
+
+        # Check if step was skipped
+        if [[ "$exit_code" == "skipped" ]]; then
+          skipped=true
+          exit_code=0
+        fi
+
+        # For now, derive assertions from exit code (will be enhanced in PR #3)
+        if [[ "$skipped" == "true" ]]; then
+          assertions_json='{"passed": 0, "total": 0}'
+        elif [[ "$exit_code" == "0" ]]; then
+          assertions_json='{"passed": 1, "total": 1}'
+        else
+          assertions_json='{"passed": 0, "total": 1}'
+        fi
+
+        jq -n \
+          --argjson n "$((10#$step_num))" \
+          --arg desc "$step_desc" \
+          --argjson exit "$exit_code" \
+          --argjson skip "$skipped" \
+          --argjson asserts "$assertions_json" \
+          '{n: $n, description: $desc, exit: $exit, skipped: $skip, assertions: $asserts}'
+      done | jq -s '.'
+    )
+  fi
+
+  # Generate the full RESULT.json
+  jq -n \
+    --argjson pr "$pr_number" \
+    --arg sha "$short_sha" \
+    --arg status "$status" \
+    --argjson steps "$steps_json" \
+    --argjson duration "$duration_ms" \
+    '{
+      pr: $pr,
+      sha: $sha,
+      status: $status,
+      steps: $steps,
+      duration_ms: $duration,
+      tokens: null,
+      cost_usd_cents: null
+    }' > "$result_json"
+}
+
 cmd_create() {
   local pr_number="$1"
   local pr_sha
@@ -218,6 +283,9 @@ cmd_finalize() {
 
   local msg="final: ${result}"
   [[ -n "$reason" ]] && msg="${msg} — ${reason}"
+
+  # Generate RESULT.json
+  _generate_result_json "$sandbox_path" "$pr_number" "$short_sha" "$result" "$reason"
 
   cat > FINAL.md <<EOF
 # Result: ${result}
