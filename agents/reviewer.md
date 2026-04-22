@@ -49,4 +49,10 @@ Same as drafter — check `breeze:wip` with fresh timestamp before taking over. 
 
 ## Output
 
-End each run with a one-line status: `reviewer: pr=<n> action=<approved|requested-changes|paused|skipped-already-reviewed>`.
+End each run with a one-line status: `reviewer: pr=<n> action=<approved|requested-changes|paused|skipped-already-reviewed> next=<role|none>`.
+
+Next-role hints:
+- After approving: `next=e2e`
+- After requesting changes: `next=drafter`
+- After pausing for human: `next=none`
+- After skipping already reviewed: `next=none`

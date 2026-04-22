@@ -635,7 +635,92 @@ check_drafter_closed_pr() {
   return 1
 }
 
-target=$(pick_target)
+# Check for next-role hint from the last agent that finished on this target.
+# Returns the next role to dispatch, or empty string if no hint or hint is "none".
+check_next_hint() {
+  local number="$1"
+  local activity_log="${LOG_DIR}/activity.ndjson"
+
+  [[ ! -f "$activity_log" ]] && { echo ""; return; }
+
+  # Get the last end event for this target with a non-null next field
+  local next_role
+  next_role=$(jq -r --arg target "#${number}" '
+    select(.event == "end" and .target == $target and .next != null) |
+    .next
+  ' "$activity_log" 2>/dev/null | tail -1)
+
+  echo "$next_role"
+}
+
+# Check if we should skip the hint to prevent same-role loops.
+# Returns 0 if we should skip (same role hinted twice in a row), 1 otherwise.
+check_hint_loop() {
+  local hint_role="$1" number="$2"
+  local activity_log="${LOG_DIR}/activity.ndjson"
+
+  [[ ! -f "$activity_log" ]] && return 1
+
+  # Get the last two end events for this target with non-null next hints
+  local last_two_hints
+  last_two_hints=$(jq -r --arg target "#${number}" '
+    select(.event == "end" and .target == $target and .next != null) |
+    "\(.agent):\(.next)"
+  ' "$activity_log" 2>/dev/null | tail -2)
+
+  # If we have exactly 2 hints and both point to the same role, skip the hint
+  local hint_count=$(echo "$last_two_hints" | wc -l | xargs)
+  if [[ "$hint_count" == "2" ]]; then
+    local prev_hint=$(echo "$last_two_hints" | head -1 | cut -d: -f2)
+    local curr_hint=$(echo "$last_two_hints" | tail -1 | cut -d: -f2)
+    if [[ "$prev_hint" == "$hint_role" && "$curr_hint" == "$hint_role" ]]; then
+      log "ANTI-LOOP: same role '$hint_role' hinted twice for #$number, falling back to pick_target"
+      return 0
+    fi
+  fi
+
+  return 1
+}
+
+# First check for next-role hint before running pick_target
+target=""
+hint_target=""
+
+# Get all open issues and PRs that might need work
+all_targets=$(( \
+  gh issue list --repo "$REPO" --state open --limit 50 --json number --jq '.[].number' 2>/dev/null; \
+  gh pr list --repo "$REPO" --state open --limit 50 --json number --jq '.[].number' 2>/dev/null \
+) | sort -u)
+
+# Check each target for a next-role hint
+for t in $all_targets; do
+  # Skip if target has breeze:wip or breeze:human
+  labels=$(gh issue view "$t" --repo "$REPO" --json labels --jq '.labels | map(.name) | join(",")' 2>/dev/null || echo "")
+  if echo "$labels" | grep -qE "breeze:(wip|human)"; then
+    continue
+  fi
+
+  hint=$(check_next_hint "$t")
+  if [[ -n "$hint" && "$hint" != "none" ]]; then
+    # Check anti-loop safety
+    if ! check_hint_loop "$hint" "$t"; then
+      hint_target="$hint $t"
+      log "dispatch: using hint from activity log - $hint on #$t"
+      break
+    fi
+  fi
+done
+
+# If we have a hint, use it; otherwise fall back to pick_target
+if [[ -n "$hint_target" ]]; then
+  target="$hint_target"
+  log "dispatch: kind=${hint_target%% *} target=#${hint_target##* } source=hint"
+else
+  target=$(pick_target)
+  if [[ -n "$target" ]]; then
+    log "dispatch: kind=${target%% *} target=#${target##* } source=pick_target"
+  fi
+fi
 
 if [[ -z "$target" ]]; then
   # Pause-don't-stop: distinguish "all open work paused on human" from
@@ -695,7 +780,7 @@ The drafter is forbidden from closing PRs it was dispatched to work on (see #719
   exit 0
 fi
 
-log "dispatch: kind=$kind target=#$number"
+# Dispatch source was already logged when target was selected
 DISPATCH_START_TS=$SECONDS
 
 # Acquire claim BEFORE spawning, so concurrent ticks don't dispatch twice

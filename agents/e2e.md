@@ -69,4 +69,9 @@ A second instance of the reviewer agent reads the trace tag (`trace-<short-sha>-
 
 ## Output
 
-Print to stdout on exit: `e2e: pr=<n> sandbox=<url> result=<pass|fail|incomplete|gave-up-breeze-human>`.
+Print to stdout on exit: `e2e: pr=<n> sandbox=<url> result=<pass|fail|incomplete|gave-up-breeze-human> next=<role|none>`.
+
+Next-role hints:
+- After passing E2E: `next=merger`
+- After failing E2E: `next=e2e-supervisor`
+- After incomplete or pausing for human: `next=none`

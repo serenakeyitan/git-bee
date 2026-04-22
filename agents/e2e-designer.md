@@ -62,4 +62,8 @@ After you append the test plan:
 
 ## Output
 
-End with: `e2e-designer: issue=<n> action=<designed|revised|gave-up-breeze-human>`
+End with: `e2e-designer: issue=<n> action=<designed|revised|gave-up-breeze-human> next=<role|none>`.
+
+Next-role hints:
+- After designing or revising test plan: `next=e2e-supervisor`
+- After pausing for human: `next=none`

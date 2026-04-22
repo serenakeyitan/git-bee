@@ -87,4 +87,8 @@ Same as other agents — acquire `breeze:wip` on the design-doc issue before aud
 ## Output
 
 End each run with a one-line status:
-`auditor: issue=<n> verdict=<all-shipped|gaps-found|skipped> <all-shipped → closed> <gaps-found → breeze:human>`.
+`auditor: issue=<n> verdict=<all-shipped|gaps-found|skipped> <all-shipped → closed> <gaps-found → breeze:human> next=<role|none>`.
+
+Next-role hints:
+- After closing issue or finding gaps: `next=none`
+- After skipping: `next=none`

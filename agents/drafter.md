@@ -73,4 +73,10 @@ Before touching an item:
 
 ## Output
 
-End each run with a one-line status in stdout: `drafter: issue=<n> action=<claimed|drafted|implemented|done|gave-up-breeze-human>`.
+End each run with a one-line status in stdout: `drafter: issue=<n> action=<claimed|drafted|implemented|done|gave-up-breeze-human> next=<role|none>`.
+
+Next-role hints:
+- After implementing a PR: `next=reviewer`
+- After addressing review feedback: `next=reviewer` if changes made, `next=e2e` if already approved+fresh
+- After pausing for human: `next=none`
+- After closing an issue: `next=none`

@@ -38,4 +38,13 @@ Same as other agents — acquire `breeze:wip` on the PR before merging. Release 
 
 ## Output
 
-`merger: pr=<n> action=<merged|skipped-not-approved|skipped-no-e2e|skipped-stale-e2e|skipped-conflicts|skipped-already-merged|gave-up-breeze-human>`.
+`merger: pr=<n> action=<merged|skipped-not-approved|skipped-no-e2e|skipped-stale-e2e|skipped-conflicts|skipped-already-merged|gave-up-breeze-human> next=<role|none>`.
+
+Next-role hints:
+- After merging: `next=none`
+- After skipping due to conflicts: `next=drafter`
+- After skipping due to stale E2E: `next=e2e`
+- After skipping due to no approval: `next=reviewer`
+- After skipping due to no E2E: `next=e2e`
+- After pausing for human: `next=none`
+- After skipping already merged: `next=none`

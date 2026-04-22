@@ -54,4 +54,8 @@ If the design is unclear or contradictory:
 
 ## Output
 
-End with: `planner: issue=<n> action=<planned|escalated-too-many-prs|gave-up-breeze-human>`
+End with: `planner: issue=<n> action=<planned|escalated-too-many-prs|gave-up-breeze-human> next=<role|none>`.
+
+Next-role hints:
+- After planning: `next=e2e-designer`
+- After escalating or pausing for human: `next=none`
