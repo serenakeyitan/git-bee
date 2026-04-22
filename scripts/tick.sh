@@ -27,6 +27,84 @@ mkdir -p "$LOG_DIR"
 
 log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" | tee -a "$LOG"; }
 
+# Last-failure persistence functions (issue #751)
+FAILURE_DIR="${LOG_DIR}/last-failure"
+
+# Capture failure information when agent fails
+capture_failure_info() {
+  local role="$1" target="$2" exit_code="$3" outcome="${4:-unknown}"
+
+  mkdir -p "$FAILURE_DIR"
+  local failure_file="${FAILURE_DIR}/${role}-${target}.md"
+
+  # Extract last 50 lines from log
+  local last_lines
+  last_lines=$(tail -n 50 "$LOG" 2>/dev/null || echo "No log available")
+
+  # Infer failure cause from log patterns
+  local inferred_cause="unknown"
+  if echo "$last_lines" | grep -qiE "(network|timeout|connection|refused|reset)"; then
+    inferred_cause="network"
+  elif echo "$last_lines" | grep -qiE "(conflict|merge|diverged|fast-forward)"; then
+    inferred_cause="conflict"
+  elif echo "$last_lines" | grep -qiE "(tool|error|exception|traceback|failed|invalid)"; then
+    inferred_cause="tool-error"
+  fi
+
+  # Write failure file
+  cat > "$failure_file" <<EOF
+timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+role: $role
+target: #$target
+exit_code: $exit_code
+outcome: $outcome
+inferred_cause: $inferred_cause
+---
+Last 50 lines of output:
+$last_lines
+EOF
+
+  log "wrote failure info to $failure_file (cause: $inferred_cause)"
+}
+
+# Check if outcome is null/failed-* and capture failure
+check_and_capture_outcome_failure() {
+  local role="$1" target="$2"
+
+  # Get the last activity log entry for this run
+  local activity_log="${LOG_DIR}/activity.ndjson"
+  if [[ ! -f "$activity_log" ]]; then
+    return
+  fi
+
+  # Get the outcome from the most recent end event for this agent/target
+  local outcome
+  outcome=$(jq -r --arg agent "$role" --arg target "#${target}" '
+    select(.event == "end" and .agent == $agent and .target == $target) |
+    .outcome // "null"
+  ' "$activity_log" 2>/dev/null | tail -1)
+
+  # Capture failure if outcome is null or starts with "failed-"
+  if [[ "$outcome" == "null" ]] || [[ "$outcome" == failed-* ]]; then
+    log "outcome is $outcome, capturing failure info"
+    capture_failure_info "$role" "$target" "0" "$outcome"
+  else
+    # Success - clean up any existing failure file
+    local failure_file="${FAILURE_DIR}/${role}-${target}.md"
+    if [[ -f "$failure_file" ]]; then
+      rm -f "$failure_file"
+      log "removed failure file after successful run: $failure_file"
+    fi
+  fi
+}
+
+# Clean up old failure files (older than 24 hours)
+cleanup_old_failures() {
+  if [[ -d "$FAILURE_DIR" ]]; then
+    find "$FAILURE_DIR" -name "*.md" -mtime +1 -delete 2>/dev/null || true
+  fi
+}
+
 # First-line logging - before any guards
 # Detect if this was fired by launchd or self-triggered
 LAUNCHD_FIRE="no"
@@ -212,6 +290,79 @@ if [[ -x "$HERE/notification-scanner.sh" ]]; then
   "$HERE/notification-scanner.sh" 2>&1 | tee -a "$LOG" || log "notification scanner failed (rc=$?)"
 fi
 
+# Check if a PR qualifies for tiny-fix fast path
+# Returns 0 if PR qualifies, 1 otherwise
+check_tiny_fix() {
+  local pr_number="$1"
+
+  # Get PR details
+  local pr_data
+  pr_data=$(gh pr view "$pr_number" --repo "$REPO" --json headRefName,baseRefName,files,labels,additions,deletions,body 2>/dev/null || echo "{}")
+
+  # Check if linked issue has size:tiny label
+  local issue_number
+  issue_number=$(echo "$pr_data" | jq -r '.body' | grep -oE '(Fixes|Closes|Resolves) #[0-9]+' | grep -oE '[0-9]+' | head -1 || echo "")
+  local has_size_tiny=0
+  if [[ -n "$issue_number" ]]; then
+    local issue_labels
+    issue_labels=$(gh issue view "$issue_number" --repo "$REPO" --json labels --jq '.labels[].name' 2>/dev/null || echo "")
+    if echo "$issue_labels" | grep -q "^size:tiny$"; then
+      has_size_tiny=1
+    fi
+  fi
+
+  # Check if drafter emitted action=implemented-tiny
+  local has_implemented_tiny=0
+  local drafter_comments
+  drafter_comments=$(gh pr view "$pr_number" --repo "$REPO" --json comments --jq '.comments[].body' 2>/dev/null || echo "")
+  if echo "$drafter_comments" | grep -q "drafter: issue=.* action=implemented-tiny"; then
+    has_implemented_tiny=1
+  fi
+
+  # Must have either size:tiny label or implemented-tiny marker
+  if [[ "$has_size_tiny" == "0" && "$has_implemented_tiny" == "0" ]]; then
+    return 1
+  fi
+
+  # Calculate total LoC changed
+  local additions=$(echo "$pr_data" | jq -r '.additions // 0')
+  local deletions=$(echo "$pr_data" | jq -r '.deletions // 0')
+  local total_loc=$((additions + deletions))
+
+  if [[ "$total_loc" -gt 20 ]]; then
+    return 1
+  fi
+
+  # Check file patterns - all files must match allowed patterns
+  local files
+  files=$(echo "$pr_data" | jq -r '.files[].path' 2>/dev/null || echo "")
+
+  if [[ -z "$files" ]]; then
+    return 1
+  fi
+
+  while IFS= read -r file; do
+    [[ -z "$file" ]] && continue
+
+    # Exclude changes to scripts/tick.sh itself (safety carve-out)
+    if [[ "$file" == "scripts/tick.sh" ]]; then
+      return 1
+    fi
+
+    # Check if file matches allowed patterns: *.sh, *.md, agents/*, docs/*
+    if [[ "$file" == *.sh ]] || [[ "$file" == *.md ]] || \
+       [[ "$file" == agents/* ]] || [[ "$file" == docs/* ]]; then
+      continue
+    else
+      # File doesn't match allowed patterns
+      return 1
+    fi
+  done <<< "$files"
+
+  # All checks passed
+  return 0
+}
+
 # Guard 2: find work
 # Priority order (PRs beat issues — if an issue already has a linked PR,
 # the PR is the next actionable step):
@@ -271,7 +422,7 @@ pick_target() {
 
   local pr_basics
   pr_basics=$(gh pr list --repo "$REPO" --state open --search "sort:created-asc" --limit 50 \
-    --json number,reviewDecision,labels,reviews,comments,headRefOid 2>/dev/null || echo "[]")
+    --json number,reviewDecision,labels,reviews,comments,headRefOid,mergeable,mergeStateStatus 2>/dev/null || echo "[]")
   # Priority sort: priority:high first, then original (created-asc) order.
   pr_basics=$(echo "$pr_basics" | jq '[ .[] | . as $p | $p + {_prio: (if ($p.labels | map(.name) | index("priority:high")) then 0 else 1 end)} ] | sort_by(._prio) | map(del(._prio))')
 
@@ -286,10 +437,11 @@ pick_target() {
     local pr_sha=$(echo "$pr" | jq -r '.headRefOid')
     local has_wip=$(echo "$pr" | jq -r '.labels | map(.name) | index("breeze:wip") // false' 2>/dev/null || echo "false")
     local has_human=$(echo "$pr" | jq -r '.labels | map(.name) | index("breeze:human") // false' 2>/dev/null || echo "false")
+    local is_conflicting=$(echo "$pr" | jq -r '.mergeable == "CONFLICTING" or .mergeStateStatus == "DIRTY"' 2>/dev/null || echo "false")
     local has_e2e_pass=$(echo "$pr" | jq -r --arg sha "${pr_sha:0:7}" '
       any(.comments[]?.body // ""; (contains("**E2E trace (pass)**") and contains($sha)))' 2>/dev/null || echo "false")
 
-    if [[ "$has_wip" == "false" && "$has_human" == "false" && "$has_e2e_pass" == "true" ]]; then
+    if [[ "$has_wip" == "false" && "$has_human" == "false" && "$is_conflicting" == "false" && "$has_e2e_pass" == "true" ]]; then
       if has_human_approval "$pr" "$pr_sha"; then
         mergeable_prs="${mergeable_prs}${pr_num}"$'\n'
       fi
@@ -297,6 +449,29 @@ pick_target() {
   done < <(echo "$pr_basics" | jq -c '.[]' 2>/dev/null)
   if [[ -n "$mergeable_prs" ]]; then
     echo "merger $(echo "$mergeable_prs" | head -1)"
+    return
+  fi
+
+  # 1a'. Approved PRs with passing E2E but merge conflicts → drafter for rebase
+  # These PRs are ready to merge except they have conflicts with main
+  local conflicted_prs
+  conflicted_prs=$(echo "$pr_basics" | jq -r '
+    .[]
+    | . as $pr
+    | select(.labels | map(.name) | index("breeze:wip") | not)
+    | select(.labels | map(.name) | index("breeze:human") | not)
+    | select(.mergeable == "CONFLICTING" or .mergeStateStatus == "DIRTY")
+    | select(
+        .reviewDecision == "APPROVED"
+        or any(.reviews[]?.body // ""; contains("<!-- bee:approved-for-e2e -->"))
+        or any(.comments[]?.body // ""; contains("<!-- bee:approved-for-e2e -->"))
+      )
+    | select(any(.comments[]?.body // "";
+        (contains("**E2E trace (pass)**") and contains($pr.headRefOid[0:7]))))
+    | .number
+  ' 2>/dev/null || true)
+  if [[ -n "$conflicted_prs" ]]; then
+    echo "drafter $(echo "$conflicted_prs" | head -1)"
     return
   fi
 
@@ -376,8 +551,69 @@ pick_target() {
     fi
   done < <(echo "$pr_basics" | jq -c '.[]' 2>/dev/null)
   if [[ -n "$approved_prs" ]]; then
-    echo "e2e $(echo "$approved_prs" | head -1)"
-    return
+    local pr_number=$(echo "$approved_prs" | head -1)
+
+    # Supervisor consistency check for reviewer verdict invariant (issue #734)
+    # Check alignment between activity log marker and GitHub review state
+    local activity_log="${LOG_DIR}/activity.ndjson"
+    local marker_action=""
+    if [[ -f "$activity_log" ]]; then
+      # Get last reviewer activity marker for this PR
+      marker_action=$(jq -r --arg pr "#${pr_number}" \
+        'select(.event == "end" and .agent == "reviewer" and .target == $pr) |
+         .outcome // ""' "$activity_log" 2>/dev/null | tail -1)
+    fi
+
+    # Get GitHub review state for the last review
+    local gh_state=""
+    gh_state=$(gh pr view "$pr_number" --repo "$REPO" --json reviews \
+      --jq '.reviews | if length > 0 then .[-1].state else "" end' 2>/dev/null || echo "")
+
+    # Log supervisor decision
+    local decision=""
+    local should_dispatch=1
+
+    # Check acceptable pairings
+    if [[ "$marker_action" == "approved" ]] && [[ "$gh_state" == "APPROVED" ]]; then
+      decision="advance"
+    elif [[ "$marker_action" == "paused" ]]; then
+      decision="human"
+      should_dispatch=0
+      # breeze:human should already be set, but ensure it
+      set_breeze_state "$REPO" "$pr_number" human
+    else
+      # Divergence detected - flag for human review
+      decision="divergence"
+      should_dispatch=0
+      set_breeze_state "$REPO" "$pr_number" human
+
+      # File supervisor issue
+      local issue_body
+      issue_body=$(printf '%s\n' \
+        "**Supervisor: Reviewer verdict divergence detected**" \
+        "" \
+        "The supervisor detected a mismatch between the reviewer's activity marker and GitHub review state for PR #${pr_number}." \
+        "" \
+        "- **Activity marker action**: \`${marker_action:-"(none)"}\`" \
+        "- **GitHub review state**: \`${gh_state:-"(none)"}\`" \
+        "- **Expected**: These should align (approved/APPROVED, requested-changes/CHANGES_REQUESTED, or paused)" \
+        "" \
+        "This indicates the reviewer agent has diverged sources of truth for its verdict. Applied \`breeze:human\` label to PR #${pr_number} pending investigation." \
+        "" \
+        "See issue #734 for context on this invariant enforcement.")
+
+      gh issue create --repo "$REPO" \
+        --title "Supervisor: Reviewer verdict divergence on PR #${pr_number}" \
+        --body "$issue_body" 2>&1 | tee -a "$LOG" || true
+    fi
+
+    # Log supervisor decision
+    log "supervisor: pr=${pr_number} reviewer_marker=${marker_action:-null} gh_state=${gh_state:-null} decision=${decision}"
+
+    if [[ "$should_dispatch" == "1" ]]; then
+      echo "e2e $pr_number"
+      return
+    fi
   fi
 
   # 2. PRs needing a reviewer — no review yet at current HEAD SHA.
@@ -406,7 +642,16 @@ pick_target() {
     fi
   done < <(echo "$pr_rows" | jq -c '.[]' 2>/dev/null)
   if [[ -n "$unreviewed_prs" ]]; then
-    echo "reviewer $(echo "$unreviewed_prs" | head -1)"
+    local pr_to_check=$(echo "$unreviewed_prs" | head -1)
+
+    # Check if this PR qualifies for tiny-fix fast path
+    if check_tiny_fix "$pr_to_check"; then
+      log "tiny-fix detected: PR #$pr_to_check skipping reviewer+e2e, routing to merger"
+      echo "merger $pr_to_check"
+      return
+    fi
+
+    echo "reviewer $pr_to_check"
     return
   fi
 
@@ -527,34 +772,38 @@ pick_target() {
         fi
       fi
     fi
+    # Guard: check if this issue already has an open PR linked to it
+    # If it does, skip dispatching drafter and log warning
+    local linked_pr
+    linked_pr=$(gh pr list --repo "$REPO" --state open --search "$n in:body" --json number --jq '.[0].number' 2>/dev/null || echo "")
+    if [[ -n "$linked_pr" ]]; then
+      log "ERROR: issue #$n already has open PR #$linked_pr linked to it — dispatcher should have picked PR for revision, not issue"
+      continue  # Skip to next issue
+    fi
     echo "drafter $n"
     return
   done
 }
 
 # Hot loop detector — check if the same agent has been dispatched N times
-# with exit_code=0 and outcome=null to the same target within a time window.
+# with exit_code=0 and outcome=null or refused-by-guard outcomes to the same
+# target within a time window.
 # Returns 0 if hot loop detected (should skip dispatch), 1 otherwise.
 check_hot_loop() {
   local agent="$1" number="$2"
-  local threshold=3 window_minutes=30
+  local threshold=2 window_minutes=5  # Tightened: 2 iterations within 5min
   local activity_log="${LOG_DIR}/activity.ndjson"
 
   # No activity log means no hot loop
   [[ ! -f "$activity_log" ]] && return 1
 
-  # Time window: now - 30 minutes
+  # Time window: now - 5 minutes
   local now_ts=$(date +%s)
   local window_start=$((now_ts - window_minutes * 60))
 
-  # Count consecutive runs with exit_code=0 and outcome=null for this agent+target
-  # within the time window. jq filters:
-  # 1. Event type = "end"
-  # 2. Agent matches
-  # 3. Target matches (#N)
-  # 4. exit_code = 0
-  # 5. outcome = null
-  # 6. timestamp within window
+  # Count consecutive runs with exit_code=0 and outcome=null or refused-by-guard
+  # outcomes for this agent+target within the time window.
+  # Refused-by-guard outcomes: skipped-stale-e2e, skipped-already-reviewed, etc.
   local count
   count=$(jq -r --arg agent "$agent" \
     --arg target "#${number}" \
@@ -563,13 +812,14 @@ check_hot_loop() {
             .agent == $agent and
             .target == $target and
             .exit_code == 0 and
-            .outcome == null) |
+            (.outcome == null or
+             (.outcome // "" | startswith("skipped-")))) |
      .ts | fromdateiso8601 |
      select(. >= ($window_start | tonumber))' \
     "$activity_log" 2>/dev/null | wc -l | xargs)
 
   if [[ "$count" -ge "$threshold" ]]; then
-    log "HOT LOOP detected: $agent dispatched $count times to #$number with null outcome in ${window_minutes}min"
+    log "hot-loop: pr=$number role=$agent iterations=$count window=${window_minutes}min → applying breeze:human"
     return 0
   fi
 
@@ -634,7 +884,92 @@ check_drafter_closed_pr() {
   return 1
 }
 
-target=$(pick_target)
+# Check for next-role hint from the last agent that finished on this target.
+# Returns the next role to dispatch, or empty string if no hint or hint is "none".
+check_next_hint() {
+  local number="$1"
+  local activity_log="${LOG_DIR}/activity.ndjson"
+
+  [[ ! -f "$activity_log" ]] && { echo ""; return; }
+
+  # Get the last end event for this target with a non-null next field
+  local next_role
+  next_role=$(jq -r --arg target "#${number}" '
+    select(.event == "end" and .target == $target and .next != null) |
+    .next
+  ' "$activity_log" 2>/dev/null | tail -1)
+
+  echo "$next_role"
+}
+
+# Check if we should skip the hint to prevent same-role loops.
+# Returns 0 if we should skip (same role hinted twice in a row), 1 otherwise.
+check_hint_loop() {
+  local hint_role="$1" number="$2"
+  local activity_log="${LOG_DIR}/activity.ndjson"
+
+  [[ ! -f "$activity_log" ]] && return 1
+
+  # Get the last two end events for this target with non-null next hints
+  local last_two_hints
+  last_two_hints=$(jq -r --arg target "#${number}" '
+    select(.event == "end" and .target == $target and .next != null) |
+    "\(.agent):\(.next)"
+  ' "$activity_log" 2>/dev/null | tail -2)
+
+  # If we have exactly 2 hints and both point to the same role, skip the hint
+  local hint_count=$(echo "$last_two_hints" | wc -l | xargs)
+  if [[ "$hint_count" == "2" ]]; then
+    local prev_hint=$(echo "$last_two_hints" | head -1 | cut -d: -f2)
+    local curr_hint=$(echo "$last_two_hints" | tail -1 | cut -d: -f2)
+    if [[ "$prev_hint" == "$hint_role" && "$curr_hint" == "$hint_role" ]]; then
+      log "ANTI-LOOP: same role '$hint_role' hinted twice for #$number, falling back to pick_target"
+      return 0
+    fi
+  fi
+
+  return 1
+}
+
+# First check for next-role hint before running pick_target
+target=""
+hint_target=""
+
+# Get all open issues and PRs that might need work
+all_targets=$(( \
+  gh issue list --repo "$REPO" --state open --limit 50 --json number --jq '.[].number' 2>/dev/null; \
+  gh pr list --repo "$REPO" --state open --limit 50 --json number --jq '.[].number' 2>/dev/null \
+) | sort -u)
+
+# Check each target for a next-role hint
+for t in $all_targets; do
+  # Skip if target has breeze:wip or breeze:human
+  labels=$(gh issue view "$t" --repo "$REPO" --json labels --jq '.labels | map(.name) | join(",")' 2>/dev/null || echo "")
+  if echo "$labels" | grep -qE "breeze:(wip|human)"; then
+    continue
+  fi
+
+  hint=$(check_next_hint "$t")
+  if [[ -n "$hint" && "$hint" != "none" ]]; then
+    # Check anti-loop safety
+    if ! check_hint_loop "$hint" "$t"; then
+      hint_target="$hint $t"
+      log "dispatch: using hint from activity log - $hint on #$t"
+      break
+    fi
+  fi
+done
+
+# If we have a hint, use it; otherwise fall back to pick_target
+if [[ -n "$hint_target" ]]; then
+  target="$hint_target"
+  log "dispatch: kind=${hint_target%% *} target=#${hint_target##* } source=hint"
+else
+  target=$(pick_target)
+  if [[ -n "$target" ]]; then
+    log "dispatch: kind=${target%% *} target=#${target##* } source=pick_target"
+  fi
+fi
 
 if [[ -z "$target" ]]; then
   # Pause-don't-stop: distinguish "all open work paused on human" from
@@ -654,6 +989,64 @@ fi
 kind="${target%% *}"
 number="${target##* }"
 
+# E2E skip logic for script/docs-only PRs (issue #749)
+if [[ "$kind" == "e2e" ]]; then
+  # Get the list of changed files in the PR
+  changed_files=$(gh pr view "$number" --repo "$REPO" --json files --jq '.files[].path' 2>/dev/null || echo "")
+
+  if [[ -n "$changed_files" ]]; then
+    # Check if ALL changed files match the skip patterns
+    should_skip=1
+
+    while IFS= read -r file_path; do
+      [[ -z "$file_path" ]] && continue
+
+      # Critical scripts that MUST still run e2e
+      if [[ "$file_path" == "scripts/tick.sh" ||
+            "$file_path" == "scripts/bee" ||
+            "$file_path" == "scripts/notification-scanner.sh" ]]; then
+        should_skip=0
+        break
+      fi
+
+      # Check if file matches allowed skip patterns
+      if [[ ! "$file_path" =~ \.(sh|md)$ ]] &&
+         [[ ! "$file_path" =~ ^agents/ ]] &&
+         [[ ! "$file_path" =~ ^docs/ ]] &&
+         [[ ! "$file_path" =~ ^tests/ ]]; then
+        # File doesn't match skip patterns, must run e2e
+        should_skip=0
+        break
+      fi
+    done <<< "$changed_files"
+
+    if [[ "$should_skip" == "1" ]]; then
+      log "e2e: pr=$number result=skipped-scripts-only (only touches *.sh/*.md/agents/docs/tests)"
+
+      # Post comment on PR with synthetic e2e marker
+      pr_head_sha=$(gh pr view "$number" --repo "$REPO" --json headRefOid --jq '.headRefOid[0:7]' 2>/dev/null || echo "unknown")
+      comment_body="**E2E trace (pass)** for commit $pr_head_sha
+
+Sandbox: skipped-scripts-only (PR only modifies scripts/docs/agents/tests)
+
+This PR only modifies non-runtime files:
+$(echo "$changed_files" | sed 's/^/- /')
+
+E2E sandbox run skipped as these changes don't affect runtime behavior. Automatically proceeding to merger."
+
+      gh issue comment "$number" --repo "$REPO" --body "$comment_body" 2>&1 | tee -a "$LOG" || true
+
+      # Update activity log with synthetic e2e outcome
+      "$REPO_ROOT/scripts/activity.sh" start "$REPO" "e2e" "$number" "e2e-synthetic" 2>/dev/null || true
+      "$REPO_ROOT/scripts/activity.sh" end "$REPO" "e2e" "$number" "e2e-synthetic" 0 0 "skipped-scripts-only" 2>/dev/null || true
+
+      # Switch to merger dispatch
+      kind="merger"
+      log "switching dispatch: e2e→merger for scripts-only PR #$number"
+    fi
+  fi
+fi
+
 # Check for hot loop before dispatching
 if check_hot_loop "$kind" "$number"; then
   # Apply breeze:human label to break the loop
@@ -662,9 +1055,9 @@ if check_hot_loop "$kind" "$number"; then
   # Post explanatory comment on the issue/PR
   comment_body="**tick:**
 
-Hot loop detected: $kind agent dispatched 3 times to this target with null outcome in the last 30 minutes.
+Hot loop detected: $kind agent dispatched 2+ times to this target with null or refused-by-guard outcome within 5 minutes.
 
-Applied \`breeze:human\` label to prevent further automatic dispatches. Human intervention required to investigate why the agent is not posting an outcome marker.
+Applied \`breeze:human\` label to prevent further automatic dispatches. Human intervention required to investigate why the agent is repeatedly unable to make progress.
 
 Check \`~/.git-bee/activity.ndjson\` for dispatch history."
 
@@ -694,7 +1087,7 @@ The drafter is forbidden from closing PRs it was dispatched to work on (see #719
   exit 0
 fi
 
-log "dispatch: kind=$kind target=#$number"
+# Dispatch source was already logged when target was selected
 DISPATCH_START_TS=$SECONDS
 
 # Acquire claim BEFORE spawning, so concurrent ticks don't dispatch twice
@@ -726,6 +1119,22 @@ if [[ ! -f "$role_prompt_file" ]]; then
   log "ERROR: no role prompt at $role_prompt_file"
   log "tick end (pid=$$ exit=no-role-prompt)"
   exit 1
+fi
+
+# Clean up old failure files periodically (issue #751)
+cleanup_old_failures
+
+# Check for last failure and set env var if exists (issue #751)
+FAILURE_FILE="${FAILURE_DIR}/${kind}-${number}.md"
+if [[ -f "$FAILURE_FILE" ]]; then
+  # Check if file is less than 24 hours old
+  if [[ $(find "$FAILURE_FILE" -mtime -1 2>/dev/null | wc -l) -gt 0 ]]; then
+    export GIT_BEE_LAST_FAILURE="$FAILURE_FILE"
+    log "found recent failure file, passing as GIT_BEE_LAST_FAILURE=$FAILURE_FILE"
+  else
+    rm -f "$FAILURE_FILE"
+    log "removed stale failure file (>24h old): $FAILURE_FILE"
+  fi
 fi
 
 # Runtime: claude -p in bypass mode. Set CLAUDE_BIN env to override.
@@ -789,6 +1198,10 @@ else
   "$CLAUDE_BIN" -p "$prompt" --permission-mode bypassPermissions 2>&1 | tee -a "$LOG" || {
     exit_code=$?
     log "agent exited non-zero (${exit_code}) for #${number}"
+
+    # Capture failure information (issue #751)
+    capture_failure_info "$kind" "$number" "$exit_code" "failed-nonzero"
+
     "$REPO_ROOT/scripts/activity.sh" end "$REPO" "$kind" "$number" "$agent_id" "$exit_code" "$(( SECONDS - DISPATCH_START_TS ))" 2>/dev/null || true
     notify "🐝 ${kind} failed" "#${number} exited ${exit_code} after $(( (SECONDS - DISPATCH_START_TS) / 60 ))m$(( (SECONDS - DISPATCH_START_TS) % 60 ))s"
 
@@ -802,6 +1215,10 @@ fi
 
 log "agent exited cleanly for #${number}"
 "$REPO_ROOT/scripts/activity.sh" end "$REPO" "$kind" "$number" "$agent_id" 0 "$(( SECONDS - DISPATCH_START_TS ))" 2>/dev/null || true
+
+# Check if outcome is null or failed-* even though exit code is 0 (issue #751)
+check_and_capture_outcome_failure "$kind" "$number"
+
 notify "🐝 ${kind} done" "#${number} finished in $(( (SECONDS - DISPATCH_START_TS) / 60 ))m$(( (SECONDS - DISPATCH_START_TS) % 60 ))s"
 
 # Self-trigger the next tick (issue #724: reduce latency between agent-done and next-agent-start)

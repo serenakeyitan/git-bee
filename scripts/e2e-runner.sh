@@ -1,143 +1,99 @@
 #!/usr/bin/env bash
-# git-bee E2E runner: invokes PR's tests/e2e/verify.sh, captures NDJSON,
-# writes crash-safe artifact to ~/.git-bee/evals/<short-sha>-<ts>.json
+# e2e-runner.sh — invokes a PR's tests/e2e/verify.sh, captures NDJSON transcript, writes eval artifact
 #
 # Usage:
 #   scripts/e2e-runner.sh <pr-number>
 #
-# Behavior:
-#   1. Fetches PR metadata to get SHA
-#   2. Checks if tests/e2e/verify.sh exists (exit 2 if missing)
-#   3. Runs verify.sh, captures transcript and NDJSON output
-#   4. Parses {"passed":N,"total":M} verdict from last matching line
-#   5. Writes artifact atomically via tmp+rename
+# - Fails closed (exit 2) if PR lacks tests/e2e/verify.sh
+# - Captures stdout as NDJSON line-by-line
+# - Writes crash-safe artifact to ~/.git-bee/evals/<pr-sha>-<ts>.json
 #
-# Output artifact format:
-#   {
-#     "pr_number": <number>,
-#     "pr_sha": "<full-sha>",
-#     "short_sha": "<7-char-sha>",
-#     "timestamp": "<ISO8601>",
-#     "verify_exit_code": <number>,
-#     "passed": <number or null>,
-#     "total": <number or null>,
-#     "transcript": "<full stdout+stderr>",
-#     "ndjson_lines": [<parsed NDJSON objects>]
-#   }
+# Exit codes:
+#   0 — verify.sh passed
+#   1 — verify.sh failed
+#   2 — verify.sh missing (fail-closed)
+#   3 — artifact write error
 
 set -euo pipefail
 
-# Parse arguments
-if [[ $# -ne 1 ]]; then
-  echo "usage: $0 <pr-number>" >&2
-  exit 2
-fi
-
-PR_NUMBER="$1"
 UPSTREAM_REPO="serenakeyitan/git-bee"
-EVALS_DIR="$HOME/.git-bee/evals"
 
-# Ensure evals directory exists
-mkdir -p "$EVALS_DIR"
-
-# Fetch PR metadata
-echo "Fetching PR #${PR_NUMBER} metadata..." >&2
-PR_SHA=$(gh pr view "$PR_NUMBER" --repo "$UPSTREAM_REPO" --json headRefOid --jq '.headRefOid')
-SHORT_SHA="${PR_SHA:0:7}"
-TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-UNIX_TS=$(date -u +%s)
-
-# Check if verify.sh exists
-VERIFY_SCRIPT="tests/e2e/verify.sh"
-if [[ ! -f "$VERIFY_SCRIPT" ]]; then
-  echo "Error: $VERIFY_SCRIPT not found (fail-closed)" >&2
+if [[ $# -ne 1 ]]; then
+  echo "usage: e2e-runner.sh <pr-number>" >&2
   exit 2
 fi
 
-# Make verify.sh executable if it isn't already
-chmod +x "$VERIFY_SCRIPT"
+pr_number="$1"
 
-# Create temp file for output
-TEMP_OUTPUT=$(mktemp)
-TEMP_ARTIFACT=$(mktemp)
+# Get PR SHA
+pr_sha=$(gh pr view "$pr_number" --repo "$UPSTREAM_REPO" --json headRefOid --jq '.headRefOid')
+short_sha="${pr_sha:0:7}"
 
-# Trap to clean up temp files on exit/interrupt
-cleanup() {
-  rm -f "$TEMP_OUTPUT" "$TEMP_ARTIFACT"
-}
-trap cleanup EXIT INT TERM
-
-# Run verify.sh and capture output
-echo "Running $VERIFY_SCRIPT..." >&2
-set +e
-"$VERIFY_SCRIPT" > "$TEMP_OUTPUT" 2>&1
-VERIFY_EXIT_CODE=$?
-set -e
-
-# Read the full transcript
-TRANSCRIPT=$(cat "$TEMP_OUTPUT")
-
-# Parse NDJSON lines and extract verdict
-NDJSON_LINES=()
-PASSED=""
-TOTAL=""
-
-while IFS= read -r line; do
-  # Try to parse as JSON (skip empty lines)
-  if [[ -n "$line" ]] && echo "$line" | jq -e . >/dev/null 2>&1; then
-    NDJSON_LINES+=("$line")
-    # Check if this line contains a verdict
-    if echo "$line" | jq -e 'has("passed") and has("total")' >/dev/null 2>&1; then
-      PASSED=$(echo "$line" | jq -r '.passed')
-      TOTAL=$(echo "$line" | jq -r '.total')
-    fi
-  fi
-done < "$TEMP_OUTPUT"
-
-# Convert NDJSON lines array to JSON array
-NDJSON_JSON="[]"
-if [[ ${#NDJSON_LINES[@]} -gt 0 ]]; then
-  for line in "${NDJSON_LINES[@]}"; do
-    NDJSON_JSON=$(echo "$NDJSON_JSON" | jq --argjson obj "$line" '. + [$obj]')
-  done
+# Check if verify.sh exists at the PR SHA
+if ! gh api "repos/$UPSTREAM_REPO/contents/tests/e2e/verify.sh?ref=$pr_sha" --jq '.content' >/dev/null 2>&1; then
+  echo "ERROR: PR #${pr_number} lacks tests/e2e/verify.sh — fail-closed" >&2
+  exit 2
 fi
 
-# Construct the artifact JSON
-cat > "$TEMP_ARTIFACT" <<EOF
+# Prepare artifact directory
+eval_dir="$HOME/.git-bee/evals"
+mkdir -p "$eval_dir"
+
+ts=$(date -u +%s)
+artifact_path="${eval_dir}/${short_sha}-${ts}.json"
+tmp_artifact="${artifact_path}.tmp"
+
+# Clone the PR branch to a temporary location
+tmp_clone=$(mktemp -d)
+trap "rm -rf '$tmp_clone'" EXIT
+
+echo "Cloning PR #${pr_number} @ ${short_sha} to temporary location..." >&2
+git clone --quiet --depth=1 --branch "$(gh pr view "$pr_number" --repo "$UPSTREAM_REPO" --json headRefName --jq '.headRefName')" \
+  "https://github.com/$UPSTREAM_REPO.git" "$tmp_clone" >&2
+
+# Start NDJSON transcript
 {
-  "pr_number": ${PR_NUMBER},
-  "pr_sha": "${PR_SHA}",
-  "short_sha": "${SHORT_SHA}",
-  "timestamp": "${TIMESTAMP}",
-  "verify_exit_code": ${VERIFY_EXIT_CODE},
-  "passed": ${PASSED:-null},
-  "total": ${TOTAL:-null},
-  "transcript": $(echo "$TRANSCRIPT" | jq -Rs .),
-  "ndjson_lines": ${NDJSON_JSON}
-}
-EOF
+  echo '{"type": "metadata", "pr_number": '"$pr_number"', "pr_sha": "'"$pr_sha"'", "short_sha": "'"$short_sha"'", "started_at": "'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"}'
+} > "$tmp_artifact"
 
-# Validate the JSON
-if ! jq -e . "$TEMP_ARTIFACT" >/dev/null 2>&1; then
-  echo "Error: Failed to create valid JSON artifact" >&2
-  exit 1
-fi
+# Run verify.sh and capture output line-by-line as NDJSON
+cd "$tmp_clone"
+echo "Running tests/e2e/verify.sh..." >&2
 
-# Atomically write the artifact (rename is atomic on same filesystem)
-FINAL_ARTIFACT="${EVALS_DIR}/${SHORT_SHA}-${UNIX_TS}.json"
-mv "$TEMP_ARTIFACT" "$FINAL_ARTIFACT"
+exit_code=0
+line_num=0
+while IFS= read -r line; do
+  line_num=$((line_num + 1))
+  # Escape the line for JSON
+  escaped_line=$(echo -n "$line" | jq -Rs .)
+  echo '{"type": "stdout", "line": '"$line_num"', "content": '"$escaped_line"', "timestamp": "'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"}' >> "$tmp_artifact"
+  echo "$line"  # Pass through to stdout
+done < <(bash tests/e2e/verify.sh 2>&1 && echo "VERIFY_EXIT_CODE:0" || echo "VERIFY_EXIT_CODE:$?")
 
-# Report results
-echo "E2E runner completed:" >&2
-echo "  PR: #${PR_NUMBER}" >&2
-echo "  SHA: ${SHORT_SHA}" >&2
-echo "  Exit code: ${VERIFY_EXIT_CODE}" >&2
-if [[ -n "$PASSED" ]] && [[ -n "$TOTAL" ]]; then
-  echo "  Verdict: ${PASSED}/${TOTAL} passed" >&2
+# Extract exit code from the last line
+last_line=$(tail -1 "$tmp_artifact" | jq -r '.content' 2>/dev/null || echo "")
+if [[ "$last_line" =~ ^VERIFY_EXIT_CODE:([0-9]+)$ ]]; then
+  verify_exit="${BASH_REMATCH[1]}"
+  # Remove the exit code marker line from transcript
+  head -n -1 "$tmp_artifact" > "${tmp_artifact}.clean" && mv "${tmp_artifact}.clean" "$tmp_artifact"
 else
-  echo "  Verdict: no verdict found in output" >&2
+  # Fallback if we couldn't capture exit code properly
+  verify_exit=1
 fi
-echo "  Artifact: ${FINAL_ARTIFACT}" >&2
+
+# Add final entry with result
+{
+  echo '{"type": "result", "exit_code": '"$verify_exit"', "completed_at": "'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"}'
+} >> "$tmp_artifact"
+
+# Atomic rename (crash-safe)
+if mv "$tmp_artifact" "$artifact_path"; then
+  echo "Artifact written: $artifact_path" >&2
+else
+  echo "ERROR: Failed to write artifact to $artifact_path" >&2
+  rm -f "$tmp_artifact"
+  exit 3
+fi
 
 # Exit with verify.sh's exit code
-exit $VERIFY_EXIT_CODE
+exit "$verify_exit"
