@@ -103,4 +103,14 @@ When you classify a run as `design-trivial`:
 
 ## Output
 
-End with: `e2e-supervisor: pr=<n> action=<approved-plan|rejected-plan|classified-pass|classified-lazy|classified-code-bug|classified-test-bug|classified-design-trivial|classified-design-conflicting>`
+End with: `e2e-supervisor: pr=<n> action=<approved-plan|rejected-plan|classified-pass|classified-lazy|classified-code-bug|classified-test-bug|classified-design-trivial|classified-design-conflicting> next=<role|none>`.
+
+Next-role hints:
+- After classifying as pass: `next=merger`
+- After classifying as lazy-run: `next=e2e`
+- After classifying as code-bug: `next=drafter`
+- After classifying as test-bug: `next=e2e-designer`
+- After classifying as design-trivial: `next=e2e`
+- After classifying as design-conflicting: `next=none`
+- After approving plan: `next=drafter`
+- After rejecting plan: `next=e2e-designer`

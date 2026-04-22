@@ -90,10 +90,16 @@ Before touching an item:
 
 ## Output
 
-End each run with a one-line status in stdout: `drafter: issue=<n> action=<claimed|drafted|implemented|implemented-tiny|done|gave-up-breeze-human>`.
+End each run with a one-line status in stdout: `drafter: issue=<n> action=<claimed|drafted|implemented|implemented-tiny|done|gave-up-breeze-human> next=<role|none>`.
 
 Use `action=implemented-tiny` when:
 - You've implemented a trivial fix (≤20 LoC change)
 - Only touching *.sh, *.md, agents/*, or docs/* files
 - Not modifying scripts/tick.sh itself
 This triggers the tiny-fix fast path, skipping reviewer+e2e and going straight to merger.
+
+Next-role hints:
+- After implementing a PR: `next=reviewer` (or `next=merger` for `implemented-tiny`)
+- After addressing review feedback: `next=reviewer` if changes made, `next=e2e` if already approved+fresh
+- After pausing for human: `next=none`
+- After closing an issue: `next=none`

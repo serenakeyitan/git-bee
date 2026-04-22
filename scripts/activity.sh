@@ -20,7 +20,8 @@
 #     "umbrella": "#7",            // inferred from Refs/Fixes in PR body; null otherwise
 #     "exit_code": 0,              // end events only
 #     "duration_s": 108,           // end events only
-#     "outcome": "requested-changes" // end events only; parsed from last agent comment
+#     "outcome": "requested-changes", // end events only; parsed from last agent comment
+#     "next": "drafter"            // end events only; next-role hint from agent output
 #   }
 #
 # Outcome is extracted from the last comment authored on the target whose body
@@ -62,6 +63,47 @@ resolve_target() {
     return
   fi
   printf 'unknown\t\t\n'
+}
+
+# Scrape the last agent output line for the next-role hint.
+# Format: "<agent>: <target>=<n> action=<outcome> next=<role|none>"
+# Returns the next role (e.g. "reviewer", "e2e", "none") or empty string if not found.
+scrape_next_hint() {
+  local repo="$1" number="$2" agent="$3"
+
+  # Look for the agent's output in the last comment/review that starts with **<agent>:
+  local bodies=""
+  local reviews_json
+  reviews_json=$(gh pr view "$number" --repo "$repo" --json reviews 2>/dev/null || echo "")
+  if [[ -n "$reviews_json" ]]; then
+    local review_bodies
+    review_bodies=$(jq -r '[.reviews[]? | {ts: .submittedAt, body: (.body // "")}]' <<<"$reviews_json" 2>/dev/null || echo "[]")
+    bodies="$review_bodies"
+  fi
+  local comments_json
+  comments_json=$(gh issue view "$number" --repo "$repo" --json comments 2>/dev/null || echo "")
+  if [[ -n "$comments_json" ]]; then
+    local comment_bodies
+    comment_bodies=$(jq -r '[.comments[]? | {ts: .createdAt, body: (.body // "")}]' <<<"$comments_json" 2>/dev/null || echo "[]")
+    bodies=$(jq -s '.[0] + .[1]' <(echo "${bodies:-[]}") <(echo "$comment_bodies") 2>/dev/null || echo "[]")
+  fi
+  [[ -z "$bodies" || "$bodies" == "[]" ]] && { echo ""; return; }
+
+  # Look for the pattern: <agent>: ...<target>=<n> ... next=<role|none>
+  # in the agent's last comment
+  local next_hint=""
+  next_hint=$(jq -r --arg agent "$agent" --arg number "$number" '
+    sort_by(.ts) | reverse
+    | map(select(.body | test("^\\*\\*" + $agent + ":")))
+    | .[0].body // ""
+    | split("\n")
+    | map(select(test($agent + ":.*\\b(pr|issue)=" + $number + "\\b.*\\bnext=")))
+    | .[0] // ""
+    | capture("\\bnext=(?<hint>[a-z-]+|none)") // {hint: ""}
+    | .hint
+  ' <<<"$bodies" 2>/dev/null || echo "")
+
+  echo "$next_hint"
 }
 
 # Scrape the last agent-prefixed body for an outcome token.
@@ -166,12 +208,13 @@ cmd_start() {
 
 cmd_end() {
   local repo="$1" kind="$2" number="$3" agent_id="$4" exit_code="$5" duration_s="$6"
-  local meta target_kind title umbrella outcome
+  local meta target_kind title umbrella outcome next_hint
   meta=$(resolve_target "$repo" "$number")
   target_kind=$(cut -f1 <<<"$meta")
   title=$(cut -f2 <<<"$meta")
   umbrella=$(cut -f3 <<<"$meta")
   outcome=$(scrape_outcome "$repo" "$number" "$kind")
+  next_hint=$(scrape_next_hint "$repo" "$number" "$kind")
 
   local json
   json=$(jq -cn \
@@ -184,6 +227,7 @@ cmd_end() {
     --arg title "$title" \
     --arg umbrella "$umbrella" \
     --arg outcome "$outcome" \
+    --arg next_hint "$next_hint" \
     --argjson exit_code "$exit_code" \
     --argjson duration_s "$duration_s" \
     '{
@@ -198,7 +242,8 @@ cmd_end() {
       umbrella: (if $umbrella == "" then null else $umbrella end),
       exit_code: $exit_code,
       duration_s: $duration_s,
-      outcome: (if $outcome == "" then null else $outcome end)
+      outcome: (if $outcome == "" then null else $outcome end),
+      next: (if $next_hint == "" then null elif $next_hint == "none" then null else $next_hint end)
     }')
   write_event "$json"
 }
