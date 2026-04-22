@@ -437,11 +437,12 @@ pick_target() {
     local pr_sha=$(echo "$pr" | jq -r '.headRefOid')
     local has_wip=$(echo "$pr" | jq -r '.labels | map(.name) | index("breeze:wip") // false' 2>/dev/null || echo "false")
     local has_human=$(echo "$pr" | jq -r '.labels | map(.name) | index("breeze:human") // false' 2>/dev/null || echo "false")
+    local has_quarantine=$(echo "$pr" | jq -r '.labels | map(.name) | index("breeze:quarantine-hotloop") // false' 2>/dev/null || echo "false")
     local is_conflicting=$(echo "$pr" | jq -r '.mergeable == "CONFLICTING" or .mergeStateStatus == "DIRTY"' 2>/dev/null || echo "false")
     local has_e2e_pass=$(echo "$pr" | jq -r --arg sha "${pr_sha:0:7}" '
       any(.comments[]?.body // ""; (contains("**E2E trace (pass)**") and contains($sha)))' 2>/dev/null || echo "false")
 
-    if [[ "$has_wip" == "false" && "$has_human" == "false" && "$is_conflicting" == "false" && "$has_e2e_pass" == "true" ]]; then
+    if [[ "$has_wip" == "false" && "$has_human" == "false" && "$has_quarantine" == "false" && "$is_conflicting" == "false" && "$has_e2e_pass" == "true" ]]; then
       if has_human_approval "$pr" "$pr_sha"; then
         mergeable_prs="${mergeable_prs}${pr_num}"$'\n'
       fi
@@ -460,6 +461,7 @@ pick_target() {
     | . as $pr
     | select(.labels | map(.name) | index("breeze:wip") | not)
     | select(.labels | map(.name) | index("breeze:human") | not)
+    | select(.labels | map(.name) | index("breeze:quarantine-hotloop") | not)
     | select(.mergeable == "CONFLICTING" or .mergeStateStatus == "DIRTY")
     | select(
         .reviewDecision == "APPROVED"
@@ -482,6 +484,7 @@ pick_target() {
     | . as $pr
     | select(.labels | map(.name) | index("breeze:wip") | not)
     | select(.labels | map(.name) | index("breeze:human") | not)
+    | select(.labels | map(.name) | index("breeze:quarantine-hotloop") | not)
     | select(any(.comments[]?.body // "";
         (contains("**E2E trace") and contains($pr.headRefOid[0:7]))))
     | select(any(.comments[]?.body // ""; contains("**E2E trace (pass)**")) | not)
@@ -506,6 +509,7 @@ pick_target() {
     | . as $pr
     | select($pr.labels | map(.name) | index("breeze:wip") | not)
     | select($pr.labels | map(.name) | index("breeze:human") | not)
+    | select($pr.labels | map(.name) | index("breeze:quarantine-hotloop") | not)
     | ([$pr.comments[]? | select(.body // "" | test("\\*\\*e2e-supervisor: (pass|lazy-run|code-bug|test-bug|design-trivial|design-conflicting)\\*\\*"))]
         | sort_by(.createdAt) | last) as $v
     | select($v != null)
@@ -541,10 +545,11 @@ pick_target() {
     local pr_sha=$(echo "$pr" | jq -r '.headRefOid')
     local has_wip=$(echo "$pr" | jq -r '.labels | map(.name) | index("breeze:wip") // false' 2>/dev/null || echo "false")
     local has_human=$(echo "$pr" | jq -r '.labels | map(.name) | index("breeze:human") // false' 2>/dev/null || echo "false")
+    local has_quarantine=$(echo "$pr" | jq -r '.labels | map(.name) | index("breeze:quarantine-hotloop") // false' 2>/dev/null || echo "false")
     local has_e2e_trace=$(echo "$pr" | jq -r --arg sha "${pr_sha:0:7}" '
       any(.comments[]?.body // ""; (contains("**E2E trace") and contains($sha)))' 2>/dev/null || echo "false")
 
-    if [[ "$has_wip" == "false" && "$has_human" == "false" && "$has_e2e_trace" == "false" ]]; then
+    if [[ "$has_wip" == "false" && "$has_human" == "false" && "$has_quarantine" == "false" && "$has_e2e_trace" == "false" ]]; then
       if has_human_approval "$pr" "$pr_sha"; then
         approved_prs="${approved_prs}${pr_num}"$'\n'
       fi
@@ -632,9 +637,10 @@ pick_target() {
     local pr_sha=$(echo "$pr" | jq -r '.headRefOid')
     local has_wip=$(echo "$pr" | jq -r '.labels | map(.name) | index("breeze:wip") // false' 2>/dev/null || echo "false")
     local has_human=$(echo "$pr" | jq -r '.labels | map(.name) | index("breeze:human") // false' 2>/dev/null || echo "false")
+    local has_quarantine=$(echo "$pr" | jq -r '.labels | map(.name) | index("breeze:quarantine-hotloop") // false' 2>/dev/null || echo "false")
     local reviews_at_head=$(echo "$pr" | jq -r --arg sha "$pr_sha" '[$pr.reviews[]? | select(.commit.oid == $sha)] | length' 2>/dev/null || echo "0")
 
-    if [[ "$has_wip" == "false" && "$has_human" == "false" && "$reviews_at_head" == "0" ]]; then
+    if [[ "$has_wip" == "false" && "$has_human" == "false" && "$has_quarantine" == "false" && "$reviews_at_head" == "0" ]]; then
       # Skip if PR already has human approval via escape hatch
       if ! has_human_approval "$pr" "$pr_sha"; then
         unreviewed_prs="${unreviewed_prs}${pr_num}"$'\n'
@@ -666,9 +672,10 @@ pick_target() {
     local pr_sha=$(echo "$pr" | jq -r '.headRefOid')
     local has_wip=$(echo "$pr" | jq -r '.labels | map(.name) | index("breeze:wip") // false' 2>/dev/null || echo "false")
     local has_human=$(echo "$pr" | jq -r '.labels | map(.name) | index("breeze:human") // false' 2>/dev/null || echo "false")
+    local has_quarantine=$(echo "$pr" | jq -r '.labels | map(.name) | index("breeze:quarantine-hotloop") // false' 2>/dev/null || echo "false")
     local reviews_at_head=$(echo "$pr" | jq -r --arg sha "$pr_sha" '[.reviews[]? | select(.commit.oid == $sha)] | length' 2>/dev/null || echo "0")
 
-    if [[ "$has_wip" == "false" && "$has_human" == "false" && "$reviews_at_head" -gt "0" ]]; then
+    if [[ "$has_wip" == "false" && "$has_human" == "false" && "$has_quarantine" == "false" && "$reviews_at_head" -gt "0" ]]; then
       # Only dispatch drafter if PR doesn't have human approval
       if ! has_human_approval "$pr" "$pr_sha"; then
         feedback_prs="${feedback_prs}${pr_num}"$'\n'
@@ -693,6 +700,7 @@ pick_target() {
     --jq '[ .[]
             | select(.labels | map(.name) | index("breeze:wip") | not)
             | select(.labels | map(.name) | index("breeze:human") | not)
+            | select(.labels | map(.name) | index("breeze:quarantine-hotloop") | not)
             | . + {_prio: (if (.labels | map(.name) | index("priority:high")) then 0 else 1 end)} ]
           | sort_by(._prio)
           | .[].number' 2>/dev/null || true)
@@ -819,7 +827,7 @@ check_hot_loop() {
     "$activity_log" 2>/dev/null | wc -l | xargs)
 
   if [[ "$count" -ge "$threshold" ]]; then
-    log "hot-loop: pr=$number role=$agent iterations=$count window=${window_minutes}min → applying breeze:human"
+    log "hot-loop: pr=$number role=$agent iterations=$count window=${window_minutes}min → applying breeze:quarantine-hotloop"
     return 0
   fi
 
@@ -902,6 +910,91 @@ check_next_hint() {
   echo "$next_role"
 }
 
+# File a hot-loop bug issue with details about the stuck agent/PR
+file_hotloop_bug() {
+  local agent="$1" number="$2"
+  local activity_log="${LOG_DIR}/activity.ndjson"
+
+  # Check if a hot-loop issue already exists for this agent/PR
+  local existing_issue
+  existing_issue=$(gh issue list --repo "$REPO" --state open \
+    --search "hot-loop: $agent stuck on PR #$number in:title" \
+    --json number --jq '.[0].number' 2>/dev/null || echo "")
+
+  # Get recent activity log excerpt for this agent/target
+  local log_excerpt=""
+  if [[ -f "$activity_log" ]]; then
+    log_excerpt=$(jq -r --arg agent "$agent" \
+      --arg target "#${number}" \
+      'select(.event == "end" and
+              .agent == $agent and
+              .target == $target and
+              .exit_code == 0 and
+              (.outcome == null or
+               (.outcome // "" | startswith("skipped-")))) |
+       "\(.ts) agent=\(.agent) target=\(.target) outcome=\(.outcome // "null")"' \
+      "$activity_log" 2>/dev/null | tail -5 || echo "No activity log available")
+  fi
+
+  if [[ -n "$existing_issue" ]]; then
+    # Update existing issue with new occurrence
+    local update_comment="**Hot-loop detected again**
+
+Time: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+Recent activity log:
+\`\`\`
+$log_excerpt
+\`\`\`
+
+The quarantine remains in effect."
+
+    gh issue comment "$existing_issue" --repo "$REPO" --body "$update_comment" 2>&1 | tee -a "$LOG" || true
+    log "updated existing hot-loop issue #$existing_issue with new occurrence"
+  else
+    # Create new hot-loop bug issue
+    local issue_body="**Hot-loop detected**
+
+The git-bee tick loop detected an infinite dispatch loop.
+
+- **Agent**: $agent
+- **Target**: PR #$number
+- **Time**: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+- **Pattern**: 2+ consecutive dispatches with null/refused-by-guard outcome within 5 minutes
+
+**Recent activity log**:
+\`\`\`
+$log_excerpt
+\`\`\`
+
+**Action taken**:
+- Applied \`breeze:quarantine-hotloop\` label to PR #$number
+- Tick loop will skip quarantined items until fixed
+
+**To investigate**:
+1. Check why $agent exits with outcome=null on PR #$number
+2. Review the agent's logic for this specific case
+3. Fix the underlying issue
+4. Remove \`breeze:quarantine-hotloop\` label from PR #$number to resume
+
+The quarantine will auto-release when PR #$number gets new commits (HEAD SHA changes)."
+
+    # Create the issue and apply priority:high + breeze:human
+    local new_issue_url
+    new_issue_url=$(gh issue create --repo "$REPO" \
+      --title "hot-loop: $agent stuck on PR #$number" \
+      --body "$issue_body" \
+      --label "priority:high" 2>&1 | tee -a "$LOG" | tail -1 || true)
+
+    local new_issue_n
+    new_issue_n=$(echo "$new_issue_url" | grep -oE '/issues/[0-9]+' | grep -oE '[0-9]+' || echo "")
+    if [[ -n "$new_issue_n" ]]; then
+      set_breeze_state "$REPO" "$new_issue_n" human
+      log "filed hot-loop bug issue #$new_issue_n"
+    fi
+  fi
+}
+
 # Check if we should skip the hint to prevent same-role loops.
 # Returns 0 if we should skip (same role hinted twice in a row), 1 otherwise.
 check_hint_loop() {
@@ -943,9 +1036,9 @@ all_targets=$(( \
 
 # Check each target for a next-role hint
 for t in $all_targets; do
-  # Skip if target has breeze:wip or breeze:human
+  # Skip if target has breeze:wip, breeze:human, or breeze:quarantine-hotloop
   labels=$(gh issue view "$t" --repo "$REPO" --json labels --jq '.labels | map(.name) | join(",")' 2>/dev/null || echo "")
-  if echo "$labels" | grep -qE "breeze:(wip|human)"; then
+  if echo "$labels" | grep -qE "breeze:(wip|human|quarantine-hotloop)"; then
     continue
   fi
 
@@ -1047,23 +1140,106 @@ E2E sandbox run skipped as these changes don't affect runtime behavior. Automati
   fi
 fi
 
+# Check if quarantine should be auto-released (new commits pushed)
+check_quarantine_release() {
+  local number="$1"
+
+  # Check if target has quarantine label
+  local has_quarantine
+  has_quarantine=$(gh issue view "$number" --repo "$REPO" --json labels \
+    --jq '.labels | map(.name) | index("breeze:quarantine-hotloop") // false' 2>/dev/null || echo "false")
+
+  if [[ "$has_quarantine" == "false" ]]; then
+    return  # No quarantine to release
+  fi
+
+  # Get the HEAD SHA when quarantine was applied from activity log
+  local activity_log="${LOG_DIR}/activity.ndjson"
+  if [[ ! -f "$activity_log" ]]; then
+    return  # Can't determine quarantine SHA
+  fi
+
+  # Find the last hot-loop event for this target (when quarantine was applied)
+  # We look for a tick log entry about hot-loop detection
+  local quarantine_time
+  quarantine_time=$(grep "hot loop detected.*#$number" "$LOG" 2>/dev/null | tail -1 | awk '{print $1"T"$2}' || echo "")
+
+  if [[ -z "$quarantine_time" ]]; then
+    return  # Can't find when quarantine was applied
+  fi
+
+  # Check if PR exists and get current HEAD SHA
+  local current_sha=""
+  if gh pr view "$number" --repo "$REPO" --json headRefOid >/dev/null 2>&1; then
+    current_sha=$(gh pr view "$number" --repo "$REPO" --json headRefOid --jq '.headRefOid' 2>/dev/null || echo "")
+  fi
+
+  if [[ -z "$current_sha" ]]; then
+    return  # Can't get current SHA
+  fi
+
+  # Get the SHA at time of quarantine by checking git log
+  # This is approximate - we check what HEAD was around that time
+  local quarantine_ts
+  quarantine_ts=$(printf '"%s"' "$quarantine_time" | jq -r 'sub("Z$"; "+00:00") | fromdateiso8601' 2>/dev/null || echo "0")
+
+  # Check if any commits were pushed after quarantine time
+  local pr_branch
+  pr_branch=$(gh pr view "$number" --repo "$REPO" --json headRefName --jq '.headRefName' 2>/dev/null || echo "")
+
+  if [[ -n "$pr_branch" ]]; then
+    # Fetch the branch to ensure we have latest commits
+    git fetch origin "$pr_branch" --quiet 2>/dev/null || true
+
+    # Check if there are commits after quarantine time
+    local newer_commits
+    newer_commits=$(git log "origin/$pr_branch" --since="@{$quarantine_ts}" --format="%H" 2>/dev/null | head -1 || echo "")
+
+    if [[ -n "$newer_commits" ]]; then
+      log "auto-releasing quarantine on #$number (new commits detected)"
+
+      # Remove quarantine label
+      gh issue edit "$number" --repo "$REPO" --remove-label "breeze:quarantine-hotloop" 2>&1 | tee -a "$LOG" || true
+
+      # Post comment about auto-release
+      local release_comment="**tick:**
+
+Quarantine auto-released: New commits detected on PR #$number since quarantine was applied.
+
+The \`breeze:quarantine-hotloop\` label has been removed and normal dispatch can resume."
+
+      gh issue comment "$number" --repo "$REPO" --body "$release_comment" 2>&1 | tee -a "$LOG" || true
+    fi
+  fi
+}
+
+# Check for quarantine auto-release before dispatch
+if [[ -n "$target" ]]; then
+  check_quarantine_release "$number"
+fi
+
 # Check for hot loop before dispatching
 if check_hot_loop "$kind" "$number"; then
-  # Apply breeze:human label to break the loop
-  set_breeze_state "$REPO" "$number" human
+  # Apply breeze:quarantine-hotloop label to break the loop
+  gh issue edit "$number" --repo "$REPO" --add-label "breeze:quarantine-hotloop" 2>&1 | tee -a "$LOG" || true
+
+  # File a hot-loop bug issue
+  file_hotloop_bug "$kind" "$number"
 
   # Post explanatory comment on the issue/PR
   comment_body="**tick:**
 
 Hot loop detected: $kind agent dispatched 2+ times to this target with null or refused-by-guard outcome within 5 minutes.
 
-Applied \`breeze:human\` label to prevent further automatic dispatches. Human intervention required to investigate why the agent is repeatedly unable to make progress.
+Applied \`breeze:quarantine-hotloop\` label to quarantine this item. The tick loop will skip quarantined items until fixed.
+
+A bug issue has been filed to investigate why the agent is repeatedly unable to make progress. The quarantine will auto-release when new commits are pushed to this PR.
 
 Check \`~/.git-bee/activity.ndjson\` for dispatch history."
 
   gh issue comment "$number" --repo "$REPO" --body "$comment_body" 2>&1 | tee -a "$LOG" || true
 
-  log "skip: hot loop detected for $kind on #$number — labeled breeze:human"
+  log "skip: hot loop detected for $kind on #$number — labeled breeze:quarantine-hotloop"
   log "tick end (pid=$$ exit=hot-loop-detected)"
   exit 0
 fi
