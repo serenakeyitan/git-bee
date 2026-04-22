@@ -127,14 +127,29 @@ cmd_step() {
   cd "$sandbox_path"
   local branch
   branch=$(jq -r '.branch' .meta.json)
+  local pr_number
+  pr_number=$(jq -r '.pr_number' .meta.json)
   local num
   num=$(_next_step_num "$sandbox_path")
   local out err exit_code
   out=$(mktemp) err=$(mktemp)
-  set +e
-  bash -c "$cmd" >"$out" 2>"$err"
-  exit_code=$?
-  set -e
+
+  # Check if this is a verify.sh invocation
+  if [[ "$cmd" =~ tests/e2e/verify\.sh ]]; then
+    # Use e2e-runner.sh instead of direct execution
+    local runner_cmd="scripts/e2e-runner.sh $pr_number"
+    set +e
+    # Run from the git-bee root, not the sandbox
+    (cd "$(dirname "$0")/.." && bash -c "$runner_cmd") >"$out" 2>"$err"
+    exit_code=$?
+    set -e
+  else
+    # Regular command execution
+    set +e
+    bash -c "$cmd" >"$out" 2>"$err"
+    exit_code=$?
+    set -e
+  fi
 
   local step_dir="steps/step-${num}"
   mkdir -p "$step_dir"
