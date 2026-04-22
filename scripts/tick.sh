@@ -212,6 +212,79 @@ if [[ -x "$HERE/notification-scanner.sh" ]]; then
   "$HERE/notification-scanner.sh" 2>&1 | tee -a "$LOG" || log "notification scanner failed (rc=$?)"
 fi
 
+# Check if a PR qualifies for tiny-fix fast path
+# Returns 0 if PR qualifies, 1 otherwise
+check_tiny_fix() {
+  local pr_number="$1"
+
+  # Get PR details
+  local pr_data
+  pr_data=$(gh pr view "$pr_number" --repo "$REPO" --json headRefName,baseRefName,files,labels,additions,deletions,body 2>/dev/null || echo "{}")
+
+  # Check if linked issue has size:tiny label
+  local issue_number
+  issue_number=$(echo "$pr_data" | jq -r '.body' | grep -oE '(Fixes|Closes|Resolves) #[0-9]+' | grep -oE '[0-9]+' | head -1 || echo "")
+  local has_size_tiny=0
+  if [[ -n "$issue_number" ]]; then
+    local issue_labels
+    issue_labels=$(gh issue view "$issue_number" --repo "$REPO" --json labels --jq '.labels[].name' 2>/dev/null || echo "")
+    if echo "$issue_labels" | grep -q "^size:tiny$"; then
+      has_size_tiny=1
+    fi
+  fi
+
+  # Check if drafter emitted action=implemented-tiny
+  local has_implemented_tiny=0
+  local drafter_comments
+  drafter_comments=$(gh pr view "$pr_number" --repo "$REPO" --json comments --jq '.comments[].body' 2>/dev/null || echo "")
+  if echo "$drafter_comments" | grep -q "drafter: issue=.* action=implemented-tiny"; then
+    has_implemented_tiny=1
+  fi
+
+  # Must have either size:tiny label or implemented-tiny marker
+  if [[ "$has_size_tiny" == "0" && "$has_implemented_tiny" == "0" ]]; then
+    return 1
+  fi
+
+  # Calculate total LoC changed
+  local additions=$(echo "$pr_data" | jq -r '.additions // 0')
+  local deletions=$(echo "$pr_data" | jq -r '.deletions // 0')
+  local total_loc=$((additions + deletions))
+
+  if [[ "$total_loc" -gt 20 ]]; then
+    return 1
+  fi
+
+  # Check file patterns - all files must match allowed patterns
+  local files
+  files=$(echo "$pr_data" | jq -r '.files[].path' 2>/dev/null || echo "")
+
+  if [[ -z "$files" ]]; then
+    return 1
+  fi
+
+  while IFS= read -r file; do
+    [[ -z "$file" ]] && continue
+
+    # Exclude changes to scripts/tick.sh itself (safety carve-out)
+    if [[ "$file" == "scripts/tick.sh" ]]; then
+      return 1
+    fi
+
+    # Check if file matches allowed patterns: *.sh, *.md, agents/*, docs/*
+    if [[ "$file" == *.sh ]] || [[ "$file" == *.md ]] || \
+       [[ "$file" == agents/* ]] || [[ "$file" == docs/* ]]; then
+      continue
+    else
+      # File doesn't match allowed patterns
+      return 1
+    fi
+  done <<< "$files"
+
+  # All checks passed
+  return 0
+}
+
 # Guard 2: find work
 # Priority order (PRs beat issues — if an issue already has a linked PR,
 # the PR is the next actionable step):
@@ -437,7 +510,16 @@ pick_target() {
     | $pr.number
   ' 2>/dev/null || true)
   if [[ -n "$unreviewed_prs" ]]; then
-    echo "reviewer $(echo "$unreviewed_prs" | head -1)"
+    local pr_to_check=$(echo "$unreviewed_prs" | head -1)
+
+    # Check if this PR qualifies for tiny-fix fast path
+    if check_tiny_fix "$pr_to_check"; then
+      log "tiny-fix detected: PR #$pr_to_check skipping reviewer+e2e, routing to merger"
+      echo "merger $pr_to_check"
+      return
+    fi
+
+    echo "reviewer $pr_to_check"
     return
   fi
 

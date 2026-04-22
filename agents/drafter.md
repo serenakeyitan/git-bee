@@ -82,4 +82,10 @@ Before touching an item:
 
 ## Output
 
-End each run with a one-line status in stdout: `drafter: issue=<n> action=<claimed|drafted|implemented|done|gave-up-breeze-human>`.
+End each run with a one-line status in stdout: `drafter: issue=<n> action=<claimed|drafted|implemented|implemented-tiny|done|gave-up-breeze-human>`.
+
+Use `action=implemented-tiny` when:
+- You've implemented a trivial fix (≤20 LoC change)
+- Only touching *.sh, *.md, agents/*, or docs/* files
+- Not modifying scripts/tick.sh itself
+This triggers the tiny-fix fast path, skipping reviewer+e2e and going straight to merger.
