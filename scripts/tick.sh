@@ -1185,10 +1185,10 @@ if [[ "${GIT_BEE_UI:-}" == "tmux" ]] && command -v tmux >/dev/null 2>&1 && tmux 
   if [[ "$kind" == "e2e" ]]; then
     # Use wrapper for e2e agent to capture metrics
     tmux new-window -t git-bee: -n "${kind}-#${number}" \
-      "cd '$REPO_ROOT' && '$HERE/e2e-agent-wrapper.sh' '$number' '$prompt_file' 2>&1 | tee -a '$LOG'; exit_code=\$?; rm -f '$prompt_file'; echo ''; echo \"Agent exited with code \$exit_code\"; '$REPO_ROOT/scripts/activity.sh' end '$REPO' '$kind' '$number' '$agent_id' \$exit_code \$(( SECONDS - $DISPATCH_START_TS )) 2>/dev/null || true; sleep 2; echo 'Self-triggering next tick (issue #724)'; '$HERE/tick.sh' 2>&1 | tail -5; sleep 3; exit \$exit_code"
+      "cd '$REPO_ROOT' && output_file=\"/tmp/git-bee-agent-output-\$\$\"; '$HERE/e2e-agent-wrapper.sh' '$number' '$prompt_file' 2>&1 | tee \"\$output_file\" | tee -a '$LOG'; exit_code=\$?; status_line=\$(grep -E \"^${kind}:\" \"\$output_file\" 2>/dev/null | tail -1 || echo \"\"); agent_outcome=\$(echo \"\$status_line\" | grep -oE '(action|result|verdict)=[^ ]+' | cut -d= -f2 | head -1 || echo \"\"); agent_next=\$(echo \"\$status_line\" | grep -oE 'next=[^ ]+' | cut -d= -f2 | head -1 || echo \"\"); rm -f \"\$output_file\" '$prompt_file'; echo ''; echo \"Agent exited with code \$exit_code\"; '$REPO_ROOT/scripts/activity.sh' end '$REPO' '$kind' '$number' '$agent_id' \$exit_code \$(( SECONDS - $DISPATCH_START_TS )) \"\$agent_outcome\" \"\$agent_next\" 2>/dev/null || true; sleep 2; echo 'Self-triggering next tick (issue #724)'; '$HERE/tick.sh' 2>&1 | tail -5; sleep 3; exit \$exit_code"
   else
     tmux new-window -t git-bee: -n "${kind}-#${number}" \
-      "cd '$REPO_ROOT' && '$CLAUDE_BIN' -p \"\$(cat '$prompt_file')\" --permission-mode bypassPermissions 2>&1 | tee -a '$LOG'; exit_code=\$?; rm -f '$prompt_file'; echo ''; echo \"Agent exited with code \$exit_code\"; '$REPO_ROOT/scripts/activity.sh' end '$REPO' '$kind' '$number' '$agent_id' \$exit_code \$(( SECONDS - $DISPATCH_START_TS )) 2>/dev/null || true; sleep 2; echo 'Self-triggering next tick (issue #724)'; '$HERE/tick.sh' 2>&1 | tail -5; sleep 3; exit \$exit_code"
+      "cd '$REPO_ROOT' && output_file=\"/tmp/git-bee-agent-output-\$\$\"; '$CLAUDE_BIN' -p \"\$(cat '$prompt_file')\" --permission-mode bypassPermissions 2>&1 | tee \"\$output_file\" | tee -a '$LOG'; exit_code=\$?; status_line=\$(grep -E \"^${kind}:\" \"\$output_file\" 2>/dev/null | tail -1 || echo \"\"); agent_outcome=\$(echo \"\$status_line\" | grep -oE '(action|result|verdict)=[^ ]+' | cut -d= -f2 | head -1 || echo \"\"); agent_next=\$(echo \"\$status_line\" | grep -oE 'next=[^ ]+' | cut -d= -f2 | head -1 || echo \"\"); rm -f \"\$output_file\" '$prompt_file'; echo ''; echo \"Agent exited with code \$exit_code\"; '$REPO_ROOT/scripts/activity.sh' end '$REPO' '$kind' '$number' '$agent_id' \$exit_code \$(( SECONDS - $DISPATCH_START_TS )) \"\$agent_outcome\" \"\$agent_next\" 2>/dev/null || true; sleep 2; echo 'Self-triggering next tick (issue #724)'; '$HERE/tick.sh' 2>&1 | tail -5; sleep 3; exit \$exit_code"
   fi
 
   # Run janitor to clean up old windows
@@ -1208,15 +1208,31 @@ else
     echo "$prompt" > "$prompt_file"
 
     # Use wrapper for e2e agent to capture metrics
-    "$HERE/e2e-agent-wrapper.sh" "$number" "$prompt_file" 2>&1 | tee -a "$LOG" || {
+    local output_file="/tmp/git-bee-agent-output-$$"
+    "$HERE/e2e-agent-wrapper.sh" "$number" "$prompt_file" 2>&1 | tee "$output_file" | tee -a "$LOG" || {
       exit_code=$?
+
+      # Parse agent's stdout for outcome and next hint
+      local agent_outcome="" agent_next=""
+      if [[ -f "$output_file" ]]; then
+        local status_line
+        status_line=$(grep -E "^${kind}:" "$output_file" | tail -1 || echo "")
+        if [[ -n "$status_line" ]]; then
+          # Parse outcome field (could be action=, result=, or verdict=)
+          agent_outcome=$(echo "$status_line" | grep -oE '(action|result|verdict)=[^ ]+' | cut -d= -f2 | head -1 || echo "")
+          # Parse next field
+          agent_next=$(echo "$status_line" | grep -oE 'next=[^ ]+' | cut -d= -f2 | head -1 || echo "")
+        fi
+        rm -f "$output_file"
+      fi
+
       rm -f "$prompt_file"
       log "agent exited non-zero (${exit_code}) for #${number}"
 
       # Capture failure information (issue #751)
-      capture_failure_info "$kind" "$number" "$exit_code" "failed-nonzero"
+      capture_failure_info "$kind" "$number" "$exit_code" "${agent_outcome:-failed-nonzero}"
 
-      "$REPO_ROOT/scripts/activity.sh" end "$REPO" "$kind" "$number" "$agent_id" "$exit_code" "$(( SECONDS - DISPATCH_START_TS ))" 2>/dev/null || true
+      "$REPO_ROOT/scripts/activity.sh" end "$REPO" "$kind" "$number" "$agent_id" "$exit_code" "$(( SECONDS - DISPATCH_START_TS ))" "${agent_outcome:-}" "${agent_next:-}" 2>/dev/null || true
       notify "🐝 ${kind} failed" "#${number} exited ${exit_code} after $(( (SECONDS - DISPATCH_START_TS) / 60 ))m$(( (SECONDS - DISPATCH_START_TS) % 60 ))s"
 
       # Self-trigger the next tick even on failure (issue #724)
@@ -1226,16 +1242,44 @@ else
       rm -f "$LOCK"
       exit "$exit_code"
     }
-    rm -f "$prompt_file"
+    # Parse agent's stdout for successful e2e run
+    local agent_outcome="" agent_next=""
+    if [[ -f "$output_file" ]]; then
+      local status_line
+      status_line=$(grep -E "^${kind}:" "$output_file" | tail -1 || echo "")
+      if [[ -n "$status_line" ]]; then
+        # Parse outcome field (could be action=, result=, or verdict=)
+        agent_outcome=$(echo "$status_line" | grep -oE '(action|result|verdict)=[^ ]+' | cut -d= -f2 | head -1 || echo "")
+        # Parse next field
+        agent_next=$(echo "$status_line" | grep -oE 'next=[^ ]+' | cut -d= -f2 | head -1 || echo "")
+      fi
+    fi
+    rm -f "$prompt_file" "$output_file"
   else
-    "$CLAUDE_BIN" -p "$prompt" --permission-mode bypassPermissions 2>&1 | tee -a "$LOG" || {
+    # Capture agent output to parse the status line
+    local output_file="/tmp/git-bee-agent-output-$$"
+    "$CLAUDE_BIN" -p "$prompt" --permission-mode bypassPermissions 2>&1 | tee "$output_file" | tee -a "$LOG" || {
       exit_code=$?
       log "agent exited non-zero (${exit_code}) for #${number}"
 
-      # Capture failure information (issue #751)
-      capture_failure_info "$kind" "$number" "$exit_code" "failed-nonzero"
+      # Parse agent's stdout for outcome and next hint
+      local agent_outcome="" agent_next=""
+      if [[ -f "$output_file" ]]; then
+        local status_line
+        status_line=$(grep -E "^${kind}:" "$output_file" | tail -1 || echo "")
+        if [[ -n "$status_line" ]]; then
+          # Parse outcome field (could be action=, result=, or verdict=)
+          agent_outcome=$(echo "$status_line" | grep -oE '(action|result|verdict)=[^ ]+' | cut -d= -f2 | head -1 || echo "")
+          # Parse next field
+          agent_next=$(echo "$status_line" | grep -oE 'next=[^ ]+' | cut -d= -f2 | head -1 || echo "")
+        fi
+        rm -f "$output_file"
+      fi
 
-      "$REPO_ROOT/scripts/activity.sh" end "$REPO" "$kind" "$number" "$agent_id" "$exit_code" "$(( SECONDS - DISPATCH_START_TS ))" 2>/dev/null || true
+      # Capture failure information (issue #751)
+      capture_failure_info "$kind" "$number" "$exit_code" "${agent_outcome:-failed-nonzero}"
+
+      "$REPO_ROOT/scripts/activity.sh" end "$REPO" "$kind" "$number" "$agent_id" "$exit_code" "$(( SECONDS - DISPATCH_START_TS ))" "${agent_outcome:-}" "${agent_next:-}" 2>/dev/null || true
       notify "🐝 ${kind} failed" "#${number} exited ${exit_code} after $(( (SECONDS - DISPATCH_START_TS) / 60 ))m$(( (SECONDS - DISPATCH_START_TS) % 60 ))s"
 
       # Self-trigger the next tick even on failure (issue #724)
@@ -1244,11 +1288,26 @@ else
       release_all  # Must release before exec (exec prevents EXIT trap from running)
       exec "$HERE/tick.sh"
     }
+    rm -f "$output_file"
+  fi
+fi
+
+# Parse agent's stdout for outcome and next hint
+local agent_outcome="" agent_next=""
+if [[ "${GIT_BEE_UI:-}" != "tmux" ]] || ! command -v tmux >/dev/null 2>&1 || ! tmux has-session -t git-bee 2>/dev/null; then
+  # For non-tmux mode, parse from the log file
+  local status_line
+  status_line=$(tail -100 "$LOG" | grep -E "^[0-9T:Z-]+ ${kind}:" | tail -1 | cut -d' ' -f2- || echo "")
+  if [[ -n "$status_line" ]]; then
+    # Parse outcome field (could be action=, result=, or verdict=)
+    agent_outcome=$(echo "$status_line" | grep -oE '(action|result|verdict)=[^ ]+' | cut -d= -f2 | head -1 || echo "")
+    # Parse next field
+    agent_next=$(echo "$status_line" | grep -oE 'next=[^ ]+' | cut -d= -f2 | head -1 || echo "")
   fi
 fi
 
 log "agent exited cleanly for #${number}"
-"$REPO_ROOT/scripts/activity.sh" end "$REPO" "$kind" "$number" "$agent_id" 0 "$(( SECONDS - DISPATCH_START_TS ))" 2>/dev/null || true
+"$REPO_ROOT/scripts/activity.sh" end "$REPO" "$kind" "$number" "$agent_id" 0 "$(( SECONDS - DISPATCH_START_TS ))" "${agent_outcome:-}" "${agent_next:-}" 2>/dev/null || true
 
 # Check if outcome is null or failed-* even though exit code is 0 (issue #751)
 check_and_capture_outcome_failure "$kind" "$number"
