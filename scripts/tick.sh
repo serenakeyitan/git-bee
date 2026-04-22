@@ -534,28 +534,24 @@ pick_target() {
 }
 
 # Hot loop detector — check if the same agent has been dispatched N times
-# with exit_code=0 and outcome=null to the same target within a time window.
+# with exit_code=0 and outcome=null or refused-by-guard outcomes to the same
+# target within a time window.
 # Returns 0 if hot loop detected (should skip dispatch), 1 otherwise.
 check_hot_loop() {
   local agent="$1" number="$2"
-  local threshold=3 window_minutes=30
+  local threshold=2 window_minutes=5  # Tightened: 2 iterations within 5min
   local activity_log="${LOG_DIR}/activity.ndjson"
 
   # No activity log means no hot loop
   [[ ! -f "$activity_log" ]] && return 1
 
-  # Time window: now - 30 minutes
+  # Time window: now - 5 minutes
   local now_ts=$(date +%s)
   local window_start=$((now_ts - window_minutes * 60))
 
-  # Count consecutive runs with exit_code=0 and outcome=null for this agent+target
-  # within the time window. jq filters:
-  # 1. Event type = "end"
-  # 2. Agent matches
-  # 3. Target matches (#N)
-  # 4. exit_code = 0
-  # 5. outcome = null
-  # 6. timestamp within window
+  # Count consecutive runs with exit_code=0 and outcome=null or refused-by-guard
+  # outcomes for this agent+target within the time window.
+  # Refused-by-guard outcomes: skipped-stale-e2e, skipped-already-reviewed, etc.
   local count
   count=$(jq -r --arg agent "$agent" \
     --arg target "#${number}" \
@@ -564,13 +560,14 @@ check_hot_loop() {
             .agent == $agent and
             .target == $target and
             .exit_code == 0 and
-            .outcome == null) |
+            (.outcome == null or
+             (.outcome // "" | startswith("skipped-")))) |
      .ts | fromdateiso8601 |
      select(. >= ($window_start | tonumber))' \
     "$activity_log" 2>/dev/null | wc -l | xargs)
 
   if [[ "$count" -ge "$threshold" ]]; then
-    log "HOT LOOP detected: $agent dispatched $count times to #$number with null outcome in ${window_minutes}min"
+    log "hot-loop: pr=$number role=$agent iterations=$count window=${window_minutes}min → applying breeze:human"
     return 0
   fi
 
@@ -663,9 +660,9 @@ if check_hot_loop "$kind" "$number"; then
   # Post explanatory comment on the issue/PR
   comment_body="**tick:**
 
-Hot loop detected: $kind agent dispatched 3 times to this target with null outcome in the last 30 minutes.
+Hot loop detected: $kind agent dispatched 2+ times to this target with null or refused-by-guard outcome within 5 minutes.
 
-Applied \`breeze:human\` label to prevent further automatic dispatches. Human intervention required to investigate why the agent is not posting an outcome marker.
+Applied \`breeze:human\` label to prevent further automatic dispatches. Human intervention required to investigate why the agent is repeatedly unable to make progress.
 
 Check \`~/.git-bee/activity.ndjson\` for dispatch history."
 
