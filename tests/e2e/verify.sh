@@ -76,11 +76,29 @@ test_result_json() {
   return 0
 }
 
+# Test (e): Metrics capture infrastructure
+test_metrics_capture() {
+  echo ""
+  echo "Test (e): Metrics capture infrastructure"
+  echo "----------------------------------------"
+
+  # Run the dedicated test script
+  if bash "$(dirname "$0")/test-metrics-capture.sh" >/dev/null 2>&1; then
+    echo "✅ Test (e) passed: Metrics capture infrastructure works correctly"
+  else
+    echo "❌ Test (e) failed: Metrics capture error"
+    return 1
+  fi
+
+  return 0
+}
+
 # Run all tests
 test_ndjson_capture
 test_atomic_write
 test_missing_verify
 test_result_json
+test_metrics_capture
 
 echo ""
 echo "================================="

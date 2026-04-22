@@ -116,6 +116,13 @@ _generate_result_json() {
     )
   fi
 
+  # Check for metrics file from e2e-agent-wrapper
+  local tokens_json="null" cost_json="null"
+  if [[ -n "${E2E_METRICS_FILE:-}" && -f "${E2E_METRICS_FILE}" ]]; then
+    tokens_json=$(jq -r '.tokens // null' "$E2E_METRICS_FILE" 2>/dev/null || echo "null")
+    cost_json=$(jq -r '.cost_usd_cents // null' "$E2E_METRICS_FILE" 2>/dev/null || echo "null")
+  fi
+
   # Generate the full RESULT.json
   jq -n \
     --argjson pr "$pr_number" \
@@ -123,14 +130,16 @@ _generate_result_json() {
     --arg status "$status" \
     --argjson steps "$steps_json" \
     --argjson duration "$duration_ms" \
+    --argjson tokens "$tokens_json" \
+    --argjson cost "$cost_json" \
     '{
       pr: $pr,
       sha: $sha,
       status: $status,
       steps: $steps,
       duration_ms: $duration,
-      tokens: null,
-      cost_usd_cents: null
+      tokens: $tokens,
+      cost_usd_cents: $cost
     }' > "$result_json"
 }
 

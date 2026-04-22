@@ -1182,8 +1182,14 @@ if [[ "${GIT_BEE_UI:-}" == "tmux" ]] && command -v tmux >/dev/null 2>&1 && tmux 
 
   # Create new window and run claude with the prompt file
   # Note: self-triggering happens at the end of the tmux command via tick.sh call
-  tmux new-window -t git-bee: -n "${kind}-#${number}" \
-    "cd '$REPO_ROOT' && '$CLAUDE_BIN' -p \"\$(cat '$prompt_file')\" --permission-mode bypassPermissions 2>&1 | tee -a '$LOG'; exit_code=\$?; rm -f '$prompt_file'; echo ''; echo \"Agent exited with code \$exit_code\"; '$REPO_ROOT/scripts/activity.sh' end '$REPO' '$kind' '$number' '$agent_id' \$exit_code \$(( SECONDS - $DISPATCH_START_TS )) 2>/dev/null || true; sleep 2; echo 'Self-triggering next tick (issue #724)'; '$HERE/tick.sh' 2>&1 | tail -5; sleep 3; exit \$exit_code"
+  if [[ "$kind" == "e2e" ]]; then
+    # Use wrapper for e2e agent to capture metrics
+    tmux new-window -t git-bee: -n "${kind}-#${number}" \
+      "cd '$REPO_ROOT' && '$HERE/e2e-agent-wrapper.sh' '$number' '$prompt_file' 2>&1 | tee -a '$LOG'; exit_code=\$?; rm -f '$prompt_file'; echo ''; echo \"Agent exited with code \$exit_code\"; '$REPO_ROOT/scripts/activity.sh' end '$REPO' '$kind' '$number' '$agent_id' \$exit_code \$(( SECONDS - $DISPATCH_START_TS )) 2>/dev/null || true; sleep 2; echo 'Self-triggering next tick (issue #724)'; '$HERE/tick.sh' 2>&1 | tail -5; sleep 3; exit \$exit_code"
+  else
+    tmux new-window -t git-bee: -n "${kind}-#${number}" \
+      "cd '$REPO_ROOT' && '$CLAUDE_BIN' -p \"\$(cat '$prompt_file')\" --permission-mode bypassPermissions 2>&1 | tee -a '$LOG'; exit_code=\$?; rm -f '$prompt_file'; echo ''; echo \"Agent exited with code \$exit_code\"; '$REPO_ROOT/scripts/activity.sh' end '$REPO' '$kind' '$number' '$agent_id' \$exit_code \$(( SECONDS - $DISPATCH_START_TS )) 2>/dev/null || true; sleep 2; echo 'Self-triggering next tick (issue #724)'; '$HERE/tick.sh' 2>&1 | tail -5; sleep 3; exit \$exit_code"
+  fi
 
   # Run janitor to clean up old windows
   if [[ -x "$HERE/tmux-janitor.sh" ]]; then
@@ -1196,22 +1202,49 @@ if [[ "${GIT_BEE_UI:-}" == "tmux" ]] && command -v tmux >/dev/null 2>&1 && tmux 
   # Don't self-trigger here since tmux window will handle it
 else
   # Original headless mode
-  "$CLAUDE_BIN" -p "$prompt" --permission-mode bypassPermissions 2>&1 | tee -a "$LOG" || {
-    exit_code=$?
-    log "agent exited non-zero (${exit_code}) for #${number}"
+  if [[ "$kind" == "e2e" ]]; then
+    # Write prompt to temp file for wrapper
+    local prompt_file="/tmp/git-bee-prompt-${kind}-${number}.txt"
+    echo "$prompt" > "$prompt_file"
 
-    # Capture failure information (issue #751)
-    capture_failure_info "$kind" "$number" "$exit_code" "failed-nonzero"
+    # Use wrapper for e2e agent to capture metrics
+    "$HERE/e2e-agent-wrapper.sh" "$number" "$prompt_file" 2>&1 | tee -a "$LOG" || {
+      exit_code=$?
+      rm -f "$prompt_file"
+      log "agent exited non-zero (${exit_code}) for #${number}"
 
-    "$REPO_ROOT/scripts/activity.sh" end "$REPO" "$kind" "$number" "$agent_id" "$exit_code" "$(( SECONDS - DISPATCH_START_TS ))" 2>/dev/null || true
-    notify "🐝 ${kind} failed" "#${number} exited ${exit_code} after $(( (SECONDS - DISPATCH_START_TS) / 60 ))m$(( (SECONDS - DISPATCH_START_TS) % 60 ))s"
+      # Capture failure information (issue #751)
+      capture_failure_info "$kind" "$number" "$exit_code" "failed-nonzero"
 
-    # Self-trigger the next tick even on failure (issue #724)
-    log "self-triggering next tick after agent failure"
-    log "tick end (pid=$$ exit=dispatched-${kind})"
-    release_all  # Must release before exec (exec prevents EXIT trap from running)
-    exec "$HERE/tick.sh"
-  }
+      "$REPO_ROOT/scripts/activity.sh" end "$REPO" "$kind" "$number" "$agent_id" "$exit_code" "$(( SECONDS - DISPATCH_START_TS ))" 2>/dev/null || true
+      notify "🐝 ${kind} failed" "#${number} exited ${exit_code} after $(( (SECONDS - DISPATCH_START_TS) / 60 ))m$(( (SECONDS - DISPATCH_START_TS) % 60 ))s"
+
+      # Self-trigger the next tick even on failure (issue #724)
+      log "self-triggering next tick after agent failure"
+      "$HERE/tick.sh" 2>&1 | tail -5 &
+
+      rm -f "$LOCK"
+      exit "$exit_code"
+    }
+    rm -f "$prompt_file"
+  else
+    "$CLAUDE_BIN" -p "$prompt" --permission-mode bypassPermissions 2>&1 | tee -a "$LOG" || {
+      exit_code=$?
+      log "agent exited non-zero (${exit_code}) for #${number}"
+
+      # Capture failure information (issue #751)
+      capture_failure_info "$kind" "$number" "$exit_code" "failed-nonzero"
+
+      "$REPO_ROOT/scripts/activity.sh" end "$REPO" "$kind" "$number" "$agent_id" "$exit_code" "$(( SECONDS - DISPATCH_START_TS ))" 2>/dev/null || true
+      notify "🐝 ${kind} failed" "#${number} exited ${exit_code} after $(( (SECONDS - DISPATCH_START_TS) / 60 ))m$(( (SECONDS - DISPATCH_START_TS) % 60 ))s"
+
+      # Self-trigger the next tick even on failure (issue #724)
+      log "self-triggering next tick after agent failure"
+      log "tick end (pid=$$ exit=dispatched-${kind})"
+      release_all  # Must release before exec (exec prevents EXIT trap from running)
+      exec "$HERE/tick.sh"
+    }
+  fi
 fi
 
 log "agent exited cleanly for #${number}"
