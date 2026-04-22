@@ -27,6 +27,84 @@ mkdir -p "$LOG_DIR"
 
 log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" | tee -a "$LOG"; }
 
+# Last-failure persistence functions (issue #751)
+FAILURE_DIR="${LOG_DIR}/last-failure"
+
+# Capture failure information when agent fails
+capture_failure_info() {
+  local role="$1" target="$2" exit_code="$3" outcome="${4:-unknown}"
+
+  mkdir -p "$FAILURE_DIR"
+  local failure_file="${FAILURE_DIR}/${role}-${target}.md"
+
+  # Extract last 50 lines from log
+  local last_lines
+  last_lines=$(tail -n 50 "$LOG" 2>/dev/null || echo "No log available")
+
+  # Infer failure cause from log patterns
+  local inferred_cause="unknown"
+  if echo "$last_lines" | grep -qiE "(network|timeout|connection|refused|reset)"; then
+    inferred_cause="network"
+  elif echo "$last_lines" | grep -qiE "(conflict|merge|diverged|fast-forward)"; then
+    inferred_cause="conflict"
+  elif echo "$last_lines" | grep -qiE "(tool|error|exception|traceback|failed|invalid)"; then
+    inferred_cause="tool-error"
+  fi
+
+  # Write failure file
+  cat > "$failure_file" <<EOF
+timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+role: $role
+target: #$target
+exit_code: $exit_code
+outcome: $outcome
+inferred_cause: $inferred_cause
+---
+Last 50 lines of output:
+$last_lines
+EOF
+
+  log "wrote failure info to $failure_file (cause: $inferred_cause)"
+}
+
+# Check if outcome is null/failed-* and capture failure
+check_and_capture_outcome_failure() {
+  local role="$1" target="$2"
+
+  # Get the last activity log entry for this run
+  local activity_log="${LOG_DIR}/activity.ndjson"
+  if [[ ! -f "$activity_log" ]]; then
+    return
+  fi
+
+  # Get the outcome from the most recent end event for this agent/target
+  local outcome
+  outcome=$(jq -r --arg agent "$role" --arg target "#${target}" '
+    select(.event == "end" and .agent == $agent and .target == $target) |
+    .outcome // "null"
+  ' "$activity_log" 2>/dev/null | tail -1)
+
+  # Capture failure if outcome is null or starts with "failed-"
+  if [[ "$outcome" == "null" ]] || [[ "$outcome" == failed-* ]]; then
+    log "outcome is $outcome, capturing failure info"
+    capture_failure_info "$role" "$target" "0" "$outcome"
+  else
+    # Success - clean up any existing failure file
+    local failure_file="${FAILURE_DIR}/${role}-${target}.md"
+    if [[ -f "$failure_file" ]]; then
+      rm -f "$failure_file"
+      log "removed failure file after successful run: $failure_file"
+    fi
+  fi
+}
+
+# Clean up old failure files (older than 24 hours)
+cleanup_old_failures() {
+  if [[ -d "$FAILURE_DIR" ]]; then
+    find "$FAILURE_DIR" -name "*.md" -mtime +1 -delete 2>/dev/null || true
+  fi
+}
+
 # First-line logging - before any guards
 # Detect if this was fired by launchd or self-triggered
 LAUNCHD_FIRE="no"
@@ -900,6 +978,22 @@ if [[ ! -f "$role_prompt_file" ]]; then
   exit 1
 fi
 
+# Clean up old failure files periodically (issue #751)
+cleanup_old_failures
+
+# Check for last failure and set env var if exists (issue #751)
+FAILURE_FILE="${FAILURE_DIR}/${kind}-${number}.md"
+if [[ -f "$FAILURE_FILE" ]]; then
+  # Check if file is less than 24 hours old
+  if [[ $(find "$FAILURE_FILE" -mtime -1 2>/dev/null | wc -l) -gt 0 ]]; then
+    export GIT_BEE_LAST_FAILURE="$FAILURE_FILE"
+    log "found recent failure file, passing as GIT_BEE_LAST_FAILURE=$FAILURE_FILE"
+  else
+    rm -f "$FAILURE_FILE"
+    log "removed stale failure file (>24h old): $FAILURE_FILE"
+  fi
+fi
+
 # Runtime: claude -p in bypass mode. Set CLAUDE_BIN env to override.
 CLAUDE_BIN="${CLAUDE_BIN:-claude}"
 
@@ -961,6 +1055,10 @@ else
   "$CLAUDE_BIN" -p "$prompt" --permission-mode bypassPermissions 2>&1 | tee -a "$LOG" || {
     exit_code=$?
     log "agent exited non-zero (${exit_code}) for #${number}"
+
+    # Capture failure information (issue #751)
+    capture_failure_info "$kind" "$number" "$exit_code" "failed-nonzero"
+
     "$REPO_ROOT/scripts/activity.sh" end "$REPO" "$kind" "$number" "$agent_id" "$exit_code" "$(( SECONDS - DISPATCH_START_TS ))" 2>/dev/null || true
     notify "🐝 ${kind} failed" "#${number} exited ${exit_code} after $(( (SECONDS - DISPATCH_START_TS) / 60 ))m$(( (SECONDS - DISPATCH_START_TS) % 60 ))s"
 
@@ -974,6 +1072,10 @@ fi
 
 log "agent exited cleanly for #${number}"
 "$REPO_ROOT/scripts/activity.sh" end "$REPO" "$kind" "$number" "$agent_id" 0 "$(( SECONDS - DISPATCH_START_TS ))" 2>/dev/null || true
+
+# Check if outcome is null or failed-* even though exit code is 0 (issue #751)
+check_and_capture_outcome_failure "$kind" "$number"
+
 notify "🐝 ${kind} done" "#${number} finished in $(( (SECONDS - DISPATCH_START_TS) / 60 ))m$(( (SECONDS - DISPATCH_START_TS) % 60 ))s"
 
 # Self-trigger the next tick (issue #724: reduce latency between agent-done and next-agent-start)
