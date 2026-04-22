@@ -96,8 +96,10 @@ _generate_result_json() {
           exit_code=0
         fi
 
-        # For now, derive assertions from exit code (will be enhanced in PR #3)
-        if [[ "$skipped" == "true" ]]; then
+        # Check for structured assertions file first, otherwise derive from exit code
+        if [[ -f "$step_dir/assertions.json" ]]; then
+          assertions_json=$(cat "$step_dir/assertions.json")
+        elif [[ "$skipped" == "true" ]]; then
           assertions_json='{"passed": 0, "total": 0}'
         elif [[ "$exit_code" == "0" ]]; then
           assertions_json='{"passed": 1, "total": 1}'
@@ -233,6 +235,17 @@ cmd_step() {
   echo "$cmd" > "$step_dir/command"
   echo "$desc" > "$step_dir/description"
 
+  # Check for structured assertions in environment variable
+  local assertions_msg=""
+  if [[ -n "${STEP_ASSERTIONS:-}" ]]; then
+    echo "$STEP_ASSERTIONS" > "$step_dir/assertions.json"
+    local passed total
+    passed=$(echo "$STEP_ASSERTIONS" | jq -r '.passed // 0')
+    total=$(echo "$STEP_ASSERTIONS" | jq -r '.total // 1')
+    assertions_msg="
+assertions: ${passed}/${total} passed"
+  fi
+
   git add -A
   local msg_body
   msg_body=$(cat <<EOF
@@ -241,7 +254,7 @@ step-${num} ${desc}
 command:
 ${cmd}
 
-exit_code: ${exit_code}
+exit_code: ${exit_code}${assertions_msg}
 
 stdout (first 4KB):
 $(head -c 4096 "$out")

@@ -93,12 +93,30 @@ test_metrics_capture() {
   return 0
 }
 
+# Test (f): Structured assertions support
+test_structured_assertions() {
+  echo ""
+  echo "Test (f): Structured assertions support"
+  echo "---------------------------------------"
+
+  # Run the dedicated test script
+  if bash "$(dirname "$0")/test-structured-assertions.sh" >/dev/null 2>&1; then
+    echo "✅ Test (f) passed: Structured assertions work correctly"
+  else
+    echo "❌ Test (f) failed: Structured assertions error"
+    return 1
+  fi
+
+  return 0
+}
+
 # Run all tests
 test_ndjson_capture
 test_atomic_write
 test_missing_verify
 test_result_json
 test_metrics_capture
+test_structured_assertions
 
 echo ""
 echo "================================="
