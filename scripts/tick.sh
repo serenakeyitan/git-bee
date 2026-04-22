@@ -25,7 +25,7 @@ TICK_HISTORY="${LOG_DIR}/tick-history.log"
 ROLLBACK_MARKER="${LOG_DIR}/ROLLBACK"
 mkdir -p "$LOG_DIR"
 
-log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" | tee -a "$LOG"; }
+log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" | tee -a "$LOG" >&2; }
 
 # Last-failure persistence functions (issue #751)
 FAILURE_DIR="${LOG_DIR}/last-failure"
@@ -777,8 +777,9 @@ pick_target() {
     local linked_pr
     linked_pr=$(gh pr list --repo "$REPO" --state open --search "$n in:body" --json number --jq '.[0].number' 2>/dev/null || echo "")
     if [[ -n "$linked_pr" ]]; then
-      log "ERROR: issue #$n already has open PR #$linked_pr linked to it — dispatcher should have picked PR for revision, not issue"
-      continue  # Skip to next issue
+      log "redirecting issue #$n to its open PR #$linked_pr for revision"
+      echo "drafter $linked_pr"
+      return
     fi
     echo "drafter $n"
     return
