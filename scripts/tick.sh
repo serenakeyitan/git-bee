@@ -610,6 +610,26 @@ pr_pipeline_position() {
     return
   fi
 
+  # Check for reviewer verdict in COMMENTED reviews at HEAD (single-account mode)
+  # Reviewer posts "**reviewer verdict: approved**" or "**reviewer verdict: changes-requested**"
+  local reviewer_verdict_at_head
+  reviewer_verdict_at_head=$(echo "$pr_json" | jq -r --arg sha "$pr_sha"     '[.reviews[]? | select(.commit.oid == $sha and .state == "COMMENTED" and (.body | startswith("**reviewer verdict:")))] | if length > 0 then .[0].body | split("\n")[0] | split(": ")[1] | rtrimstr("**") else empty end' 2>/dev/null || echo "")
+
+  if [[ "$reviewer_verdict_at_head" == "approved" ]]; then
+    # Reviewer approved in single-account mode, treat as approved for e2e
+    if [[ "$e2e_pass_at_head" == "true" ]]; then
+      echo "ready-to-merge"
+    elif [[ "$e2e_fail_at_head" == "true" ]]; then
+      echo "approved-e2e-failed"
+    else
+      echo "approved-e2e-stale"
+    fi
+    return
+  elif [[ "$reviewer_verdict_at_head" == "changes-requested" ]]; then
+    echo "needs-drafter-review"
+    return
+  fi
+
   # Reviewed-but-not-approved-not-changes-requested at HEAD. In single-account
   # mode this is the common case: all reviews are COMMENTED (can't self-approve).
   # If reviewer has already looked at HEAD, do NOT re-dispatch reviewer — the
