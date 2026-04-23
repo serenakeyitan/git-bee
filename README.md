@@ -86,37 +86,48 @@ An autonomous agent that buzzes through GitHub issues on a schedule, picks up un
 6. The agent works the item to completion, then removes its claim.
 7. When nothing is left open, the tick exits quietly. The project is finalized.
 
-## Approving PRs
+## Single-account mode
 
-git-bee is a **one-account** system — all agents run as your GitHub account. This design choice eliminates onboarding friction (no second GitHub account required) but means GitHub's self-approval restriction applies.
+git-bee is a **one-account** system — all agents run as your GitHub account. This eliminates onboarding friction (no second GitHub account required) but means GitHub's self-review restrictions apply: you can't formally approve or request-changes on your own PR. Two HTML markers replace those actions.
 
-To approve a git-bee PR for E2E testing and merging:
-- Post a comment containing `<!-- bee:approved-for-e2e -->` on the PR
-- The marker must be posted at or after the current HEAD commit timestamp to be valid
-- Removing `breeze:human` is optional — the dispatcher respects the marker regardless
-- Once approved, the PR advances through E2E testing and merging without further pauses (unless new commits are pushed)
+### Approving a PR
+
+Post a comment on the PR containing `<!-- bee:approved-for-e2e -->`. The marker must be at or after the current HEAD commit timestamp. The dispatcher advances the PR through E2E testing and merging without further pauses (unless new commits are pushed).
+
+### Requesting changes on a PR
+
+Use `bee request-changes <pr> [reason]` (or post a comment with `<!-- bee:changes-requested -->` manually). The dispatcher routes the PR to drafter for revision on the next tick.
 
 ## Labels
 
-Only three, matching the breeze/gardener convention. No `breeze:new` — absence of any label on an open item means "unclaimed, fair game."
+Four canonical labels plus one quarantine label. See `AGENTS.md` for the full state machine.
 
 | Label | Meaning | Who sets |
 |---|---|---|
-| `breeze:wip` | An agent has claimed this item | The claiming agent |
-| `breeze:done` | All work for this item is complete | The agent, when closing |
-| `breeze:human` | Agent gave up after N attempts, needs human | The responder agent, per breeze#12 convention (N=5) |
+| `breeze:wip` | An agent has claimed this item | `claim_acquire` |
+| `breeze:human` | Agent needs human judgment | Any agent via `bee pause` |
+| `breeze:done` | All work complete | Merger, auditor, janitor |
+| `breeze:quarantine-hotloop` | Hot-loop detected; dispatcher skips | Tick's hot-loop detector |
 
-Stale `breeze:wip` = labeled event timestamp older than 2 hours. Any agent may take over a stale claim.
-
-To prevent label churn, `breeze:wip` is kept when agents hand off work. The next agent refreshes the claim without removing/re-adding the label.
+Stale `breeze:wip` = labeled-event timestamp older than 2 hours. Any agent may take over a stale claim. The `breeze:done` transition happens automatically on merge/close via merger and a periodic janitor sweep.
 
 ## Agent roles
 
 - [`agents/drafter.md`](agents/drafter.md) — Reads a design-doc issue, drafts the design in comments, opens implementation PRs linked with `Fixes #<issue>`. Also addresses reviewer feedback.
-- [`agents/reviewer.md`](agents/reviewer.md) — Reviews implementation PRs. Normal prose review comments. Focus: does the code match the design, security, obvious implementation issues.
+- [`agents/planner.md`](agents/planner.md) — Breaks thin design-doc issues into a milestone plan before drafter implements.
+- [`agents/reviewer.md`](agents/reviewer.md) — Reviews implementation PRs with a three-state verdict: approve / request-changes / escalate.
 - [`agents/e2e.md`](agents/e2e.md) — Runs E2E for a PR in a sandbox repo. Commits each step as its own commit; the Git log is the test trace.
-- [`agents/merger.md`](agents/merger.md) — Merges approved PRs with passing E2E; closes linked issues with `breeze:done`.
-- [`agents/auditor.md`](agents/auditor.md) — Fresh-context audit of multi-PR design-doc coverage. Runs when every PR in a doc's `## Milestone plan` is merged; closes the umbrella only if all coverage checks pass, else labels `breeze:human`.
+- [`agents/e2e-designer.md`](agents/e2e-designer.md) — Writes e2e test cases for PRs that lack one.
+- [`agents/e2e-supervisor.md`](agents/e2e-supervisor.md) — Classifies e2e failures (lazy-run, code-bug, test-bug, design-trivial, design-conflicting).
+- [`agents/merger.md`](agents/merger.md) — Squash-merges approved PRs with passing E2E; transitions to `breeze:done`, closes linked issues.
+- [`agents/auditor.md`](agents/auditor.md) — Fresh-context audit of multi-PR design-doc coverage. Closes the umbrella only if all coverage checks pass, else labels `breeze:human`.
+
+## Safety mechanisms
+
+- **PID lock** (`/tmp/git-bee-agent.pid`) prevents concurrent agents on the same machine.
+- **3-crash rollback**: three consecutive non-zero ticks roll back to the last known-good SHA and pause the loop via `~/.git-bee/ROLLBACK`.
+- **Hot-loop quarantine**: dispatching the same agent on the same target twice within 5 minutes with `outcome=null` quarantines the PR and files a bug.
+- **Pre-push guard**: `scripts/preflight-push.sh` refuses pushes targeting `main` or `master`.
 
 ## Setup
 
