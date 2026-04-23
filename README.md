@@ -36,7 +36,7 @@ An autonomous agent that buzzes through GitHub issues on a schedule, picks up un
   └───────┬───────────────┘
           │ yes
           ▼
-  🐝 e2e runs in sandbox repo
+  🐝 test-agent runs in sandbox repo
           │
           ▼
   ┌───────────────────────┐
@@ -106,21 +106,18 @@ Four canonical labels plus one quarantine label. See `AGENTS.md` for the full st
 |---|---|---|
 | `breeze:wip` | An agent has claimed this item | `claim_acquire` |
 | `breeze:human` | Agent needs human judgment | Any agent via `bee pause` |
-| `breeze:done` | All work complete | Merger, auditor, janitor |
+| `breeze:done` | All work complete | Merger, janitor |
 | `breeze:quarantine-hotloop` | Hot-loop detected; dispatcher skips | Tick's hot-loop detector |
 
 Stale `breeze:wip` = labeled-event timestamp older than 2 hours. Any agent may take over a stale claim. The `breeze:done` transition happens automatically on merge/close via merger and a periodic janitor sweep.
 
-## Agent roles
+## Agent roles (5 roles in v0.2.0)
 
-- [`agents/drafter.md`](agents/drafter.md) — Reads a design-doc issue, drafts the design in comments, opens implementation PRs linked with `Fixes #<issue>`. Also addresses reviewer feedback.
-- [`agents/planner.md`](agents/planner.md) — Breaks thin design-doc issues into a milestone plan before drafter implements.
+- [`agents/planner.md`](agents/planner.md) — Breaks design-doc issues into milestone plans with appropriately-sized PRs.
+- [`agents/drafter.md`](agents/drafter.md) — Turns design-doc issues into shipped code, opens implementation PRs, addresses reviewer feedback.
 - [`agents/reviewer.md`](agents/reviewer.md) — Reviews implementation PRs with a three-state verdict: approve / request-changes / escalate.
-- [`agents/e2e.md`](agents/e2e.md) — Runs E2E for a PR in a sandbox repo. Commits each step as its own commit; the Git log is the test trace.
-- [`agents/e2e-designer.md`](agents/e2e-designer.md) — Writes e2e test cases for PRs that lack one.
-- [`agents/e2e-supervisor.md`](agents/e2e-supervisor.md) — Classifies e2e failures (lazy-run, code-bug, test-bug, design-trivial, design-conflicting).
-- [`agents/merger.md`](agents/merger.md) — Squash-merges approved PRs with passing E2E; transitions to `breeze:done`, closes linked issues.
-- [`agents/auditor.md`](agents/auditor.md) — Fresh-context audit of multi-PR design-doc coverage. Closes the umbrella only if all coverage checks pass, else labels `breeze:human`.
+- [`agents/test-agent.md`](agents/test-agent.md) — Unified testing role: designs test plans, runs E2E tests in sandbox repos, classifies failures.
+- [`agents/merger.md`](agents/merger.md) — Squash-merges approved PRs with passing E2E; closes linked issues and umbrella issues when complete.
 
 ## Safety mechanisms
 
