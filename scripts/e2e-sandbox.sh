@@ -69,6 +69,82 @@ _next_step_num() {
   printf "%02d" $((10#${last:-00} + 1))
 }
 
+_generate_result_json() {
+  local sandbox_path="$1" pr_number="$2" short_sha="$3" status="$4" reason="$5"
+  local result_json="$sandbox_path/RESULT.json"
+
+  # Calculate duration from first to last commit
+  local first_ts last_ts duration_ms
+  first_ts=$(git -C "$sandbox_path" log --reverse --format='%ct' | head -1)
+  last_ts=$(date +%s)
+  duration_ms=$(( (last_ts - first_ts) * 1000 ))
+
+  # Build steps array from the steps directory
+  local steps_json="[]"
+  if [[ -d "$sandbox_path/steps" ]]; then
+    steps_json=$(
+      for step_dir in $(ls -d "$sandbox_path/steps"/step-* 2>/dev/null | sort -V); do
+        local step_num step_desc exit_code skipped assertions_json
+        step_num=$(basename "$step_dir" | sed 's/step-//')
+        step_desc=$(cat "$step_dir/description" 2>/dev/null || echo "")
+        exit_code=$(cat "$step_dir/exit-code" 2>/dev/null || echo "0")
+        skipped=false
+
+        # Check if step was skipped
+        if [[ "$exit_code" == "skipped" ]]; then
+          skipped=true
+          exit_code=0
+        fi
+
+        # Check for structured assertions file first, otherwise derive from exit code
+        if [[ -f "$step_dir/assertions.json" ]]; then
+          assertions_json=$(cat "$step_dir/assertions.json")
+        elif [[ "$skipped" == "true" ]]; then
+          assertions_json='{"passed": 0, "total": 0}'
+        elif [[ "$exit_code" == "0" ]]; then
+          assertions_json='{"passed": 1, "total": 1}'
+        else
+          assertions_json='{"passed": 0, "total": 1}'
+        fi
+
+        jq -n \
+          --argjson n "$((10#$step_num))" \
+          --arg desc "$step_desc" \
+          --argjson exit "$exit_code" \
+          --argjson skip "$skipped" \
+          --argjson asserts "$assertions_json" \
+          '{n: $n, description: $desc, exit: $exit, skipped: $skip, assertions: $asserts}'
+      done | jq -s '.'
+    )
+  fi
+
+  # Check for metrics file from e2e-agent-wrapper
+  local tokens_json="null" cost_json="null"
+  if [[ -n "${E2E_METRICS_FILE:-}" && -f "${E2E_METRICS_FILE}" ]]; then
+    tokens_json=$(jq -r '.tokens // null' "$E2E_METRICS_FILE" 2>/dev/null || echo "null")
+    cost_json=$(jq -r '.cost_usd_cents // null' "$E2E_METRICS_FILE" 2>/dev/null || echo "null")
+  fi
+
+  # Generate the full RESULT.json
+  jq -n \
+    --argjson pr "$pr_number" \
+    --arg sha "$short_sha" \
+    --arg status "$status" \
+    --argjson steps "$steps_json" \
+    --argjson duration "$duration_ms" \
+    --argjson tokens "$tokens_json" \
+    --argjson cost "$cost_json" \
+    '{
+      pr: $pr,
+      sha: $sha,
+      status: $status,
+      steps: $steps,
+      duration_ms: $duration,
+      tokens: $tokens,
+      cost_usd_cents: $cost
+    }' > "$result_json"
+}
+
 cmd_create() {
   local pr_number="$1"
   local pr_sha
@@ -159,6 +235,17 @@ cmd_step() {
   echo "$cmd" > "$step_dir/command"
   echo "$desc" > "$step_dir/description"
 
+  # Check for structured assertions in environment variable
+  local assertions_msg=""
+  if [[ -n "${STEP_ASSERTIONS:-}" ]]; then
+    echo "$STEP_ASSERTIONS" > "$step_dir/assertions.json"
+    local passed total
+    passed=$(echo "$STEP_ASSERTIONS" | jq -r '.passed // 0')
+    total=$(echo "$STEP_ASSERTIONS" | jq -r '.total // 1')
+    assertions_msg="
+assertions: ${passed}/${total} passed"
+  fi
+
   git add -A
   local msg_body
   msg_body=$(cat <<EOF
@@ -167,7 +254,7 @@ step-${num} ${desc}
 command:
 ${cmd}
 
-exit_code: ${exit_code}
+exit_code: ${exit_code}${assertions_msg}
 
 stdout (first 4KB):
 $(head -c 4096 "$out")
@@ -218,6 +305,9 @@ cmd_finalize() {
 
   local msg="final: ${result}"
   [[ -n "$reason" ]] && msg="${msg} — ${reason}"
+
+  # Generate RESULT.json
+  _generate_result_json "$sandbox_path" "$pr_number" "$short_sha" "$result" "$reason"
 
   cat > FINAL.md <<EOF
 # Result: ${result}

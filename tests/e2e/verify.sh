@@ -59,12 +59,66 @@ test_missing_verify() {
   return 0
 }
 
+# Test (d): RESULT.json generation
+test_result_json() {
+  echo ""
+  echo "Test (d): RESULT.json generation on finalize"
+  echo "--------------------------------------------"
+
+  # Run the dedicated test script
+  if bash "$(dirname "$0")/test-result-json.sh" >/dev/null 2>&1; then
+    echo "✅ Test (d) passed: RESULT.json generated with correct structure"
+  else
+    echo "❌ Test (d) failed: RESULT.json generation error"
+    return 1
+  fi
+
+  return 0
+}
+
+# Test (e): Metrics capture infrastructure
+test_metrics_capture() {
+  echo ""
+  echo "Test (e): Metrics capture infrastructure"
+  echo "----------------------------------------"
+
+  # Run the dedicated test script
+  if bash "$(dirname "$0")/test-metrics-capture.sh" >/dev/null 2>&1; then
+    echo "✅ Test (e) passed: Metrics capture infrastructure works correctly"
+  else
+    echo "❌ Test (e) failed: Metrics capture error"
+    return 1
+  fi
+
+  return 0
+}
+
+# Test (f): Structured assertions support
+test_structured_assertions() {
+  echo ""
+  echo "Test (f): Structured assertions support"
+  echo "---------------------------------------"
+
+  # Run the dedicated test script
+  if bash "$(dirname "$0")/test-structured-assertions.sh" >/dev/null 2>&1; then
+    echo "✅ Test (f) passed: Structured assertions work correctly"
+  else
+    echo "❌ Test (f) failed: Structured assertions error"
+    return 1
+  fi
+
+  return 0
+}
+
 # Run all tests
 test_ndjson_capture
 test_atomic_write
 test_missing_verify
+test_result_json
+test_metrics_capture
+test_structured_assertions
 
 echo ""
 echo "================================="
-echo "All e2e-runner.sh tests completed successfully!"
+echo "All e2e tests completed successfully!"
 exit 0
