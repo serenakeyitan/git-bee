@@ -17,6 +17,31 @@ source "$HERE/claim.sh"
 # shellcheck disable=SC1091
 source "$HERE/labels.sh"
 
+# file_or_update_issue: idempotent issue filer. If an open issue with the exact
+# <title> already exists, append a comment instead of creating a duplicate.
+# Emits the resolved issue number on stdout (empty if both create and lookup failed).
+#
+# Prevents cascade patterns like #786 -> #788 -> #792 where the same divergence
+# bug got filed once per attempt at fixing it. Originally added in #799, lost
+# in a subsequent merge/rebase, caused tonight's exit-127 rollback cascade.
+file_or_update_issue() {
+  local repo="$1" title="$2" body="$3" extra_args="${4:-}"
+  local existing
+  existing=$(gh issue list --repo "$repo" --state open --search "in:title \"$title\"" --json number,title --jq ".[] | select(.title == \"$title\") | .number" 2>/dev/null | head -1 || echo "")
+  if [[ -n "$existing" ]]; then
+    log "file_or_update_issue: #$existing already open with title '''$title''' — appending comment"
+    gh issue comment "$existing" --repo "$repo" --body "$body" >/dev/null 2>&1 || true
+    echo "$existing"
+    return 0
+  fi
+  local url num
+  # shellcheck disable=SC2086
+  url=$(gh issue create --repo "$repo" --title "$title" --body "$body" $extra_args 2>&1 | tee -a "$LOG" | tail -1 || true)
+  num=$(echo "$url" | grep -oE '/issues/[0-9]+' | grep -oE '[0-9]+' || echo "")
+  echo "$num"
+}
+
+
 REPO="serenakeyitan/git-bee"
 LOCK="/tmp/git-bee-agent.pid"
 LOG_DIR="${HOME}/.git-bee"
