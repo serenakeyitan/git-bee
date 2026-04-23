@@ -647,18 +647,14 @@ pick_target() {
         return
         ;;
       needs-review)
-        # In single-account mode the reviewer agent can't meaningfully
-        # review its own PR (can't GitHub --approve; also tends to exit
-        # without posting anything useful). Pause here and wait for the
-        # human to post either bee:approved-for-e2e or bee:changes-requested.
-        #
-        # Observed (post-#813): dispatching reviewer on a self-authored
-        # fresh PR often exits with null outcome and leaves the PR in the
-        # same state, just with a reviewer-NNN failure file accumulated.
-        # That's the same class of waste as the #804 loop, just slower.
-        set_breeze_state "$REPO" "$pr_num" human
-        log "pick_target: PR #$pr_num needs-review in single-account mode — labeled breeze:human"
-        continue
+        # Dispatch reviewer. In single-account mode the reviewer posts a
+        # comment-style verdict (per #815 updated agents/reviewer.md);
+        # the dispatcher recognizes action=approved as authoritative and
+        # routes to e2e on the next tick. Reviewer does NOT pause on
+        # self-authored — that was the root cause of the overnight
+        # "everything ends up breeze:human" failure mode.
+        echo "reviewer $pr_num"
+        return
         ;;
       quarantined|wip|human|skip)
         continue
