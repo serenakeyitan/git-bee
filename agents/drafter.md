@@ -16,10 +16,16 @@ Given a design-doc issue, turn it into shipped code.
 
 0. **Before ANY branch creation or PR work**, check for existing PRs:
    ```bash
-   gh pr list --repo <repo> --search "<issue-number> in:body state:open" --json number,headRefName
+   # First check with the duplicate detection helper (broader search)
+   existing_pr=$(scripts/check-duplicate-pr.sh <repo> <issue-number>)
+   # If no duplicate found, also do the traditional direct search
+   if [[ -z "$existing_pr" ]]; then
+     existing_pr=$(gh pr list --repo <repo> --search "<issue-number> in:body state:open" --json number,headRefName | jq -r '.[0] // empty')
+   fi
    ```
-   If a PR exists for this issue:
-   - Checkout its headRefName (fetch + switch): `git fetch origin <branch> && git checkout <branch>`
+   If a PR exists for this issue (including PRs whose title/body references the same root-cause issue):
+   - Extract its headRefName from the JSON
+   - Checkout that branch: `git fetch origin <branch> && git checkout <branch>`
    - Push further commits to that branch
    - NEVER close it and open a new one
    - NEVER create a new branch off main
@@ -60,6 +66,7 @@ If any of those feel necessary, the right answer is **escalate via `bee pause <n
 Prior failure modes this rule exists to prevent:
 - #707 / PR #706: drafter opened a duplicate PR on a new branch instead of pushing follow-ups (fixed by #708).
 - #712 / PR #711: drafter closed #710 and opened #711 on a new branch for the "same work, cleaner" — still a PR replacement, still forbidden.
+- #787 → #791 → #793: cascade of duplicate PRs for the same root-cause issue, avoided by broader duplicate detection (fixed by PR from #798/M1).
 
 ## Rules
 
