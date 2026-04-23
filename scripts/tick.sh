@@ -647,14 +647,18 @@ pick_target() {
         return
         ;;
       needs-review)
-        # Reviewer dispatches and posts a comment-style review. Even in
-        # single-account mode (where it can't GitHub-approve), its written
-        # verdict is meaningful and the workflow depends on it. The #804
-        # loop this fixed was NOT "reviewer shouldn't run" — it was
-        # "reviewer kept re-running after skipping at HEAD." That's handled
-        # by the "reviewed-at-HEAD no verdict → skip" position elsewhere.
-        echo "reviewer $pr_num"
-        return
+        # In single-account mode the reviewer agent can't meaningfully
+        # review its own PR (can't GitHub --approve; also tends to exit
+        # without posting anything useful). Pause here and wait for the
+        # human to post either bee:approved-for-e2e or bee:changes-requested.
+        #
+        # Observed (post-#813): dispatching reviewer on a self-authored
+        # fresh PR often exits with null outcome and leaves the PR in the
+        # same state, just with a reviewer-NNN failure file accumulated.
+        # That's the same class of waste as the #804 loop, just slower.
+        set_breeze_state "$REPO" "$pr_num" human
+        log "pick_target: PR #$pr_num needs-review in single-account mode — labeled breeze:human"
+        continue
         ;;
       quarantined|wip|human|skip)
         continue
