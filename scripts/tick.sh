@@ -685,7 +685,80 @@ pick_target() {
         should_dispatch=0
         set_breeze_state "$REPO" "$pr_number" human
 
-        # File supervisor issue
+        # Check if a supervisor divergence issue already exists for this PR
+        local existing_issue
+        existing_issue=$(gh issue list --repo "$REPO" --state open \
+          --search "Supervisor: Reviewer verdict divergence on PR #${pr_number} in:title" \
+          --json number --jq '.[0].number' 2>/dev/null || echo "")
+
+        if [[ -n "$existing_issue" ]]; then
+          # Update existing issue with new occurrence
+          local update_comment="**Divergence detected again**
+
+Time: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+- **Activity marker action**: \`${marker_action:-"(none)"}\`
+- **GitHub review state**: \`${gh_state:-"(none)"}\`
+- **Expected**: These should align (approved/APPROVED, requested-changes/CHANGES_REQUESTED, or paused)
+
+The \`breeze:human\` label remains on PR #${pr_number}."
+
+          gh issue comment "$existing_issue" --repo "$REPO" --body "$update_comment" 2>&1 | tee -a "$LOG" || true
+          log "updated existing supervisor divergence issue #$existing_issue with new occurrence"
+        else
+          # File new supervisor issue
+          local issue_body
+          issue_body=$(printf '%s\n' \
+            "**Supervisor: Reviewer verdict divergence detected**" \
+            "" \
+            "The supervisor detected a mismatch between the reviewer's activity marker and GitHub review state for PR #${pr_number}." \
+            "" \
+            "- **Activity marker action**: \`${marker_action:-"(none)"}\`" \
+            "- **GitHub review state**: \`${gh_state:-"(none)"}\`" \
+            "- **Expected**: These should align (approved/APPROVED, requested-changes/CHANGES_REQUESTED, or paused)" \
+            "" \
+            "This indicates the reviewer agent has diverged sources of truth for its verdict. Applied \`breeze:human\` label to PR #${pr_number} pending investigation." \
+            "" \
+            "See issue #734 for context on this invariant enforcement.")
+
+          gh issue create --repo "$REPO" \
+            --title "Supervisor: Reviewer verdict divergence on PR #${pr_number}" \
+            --body "$issue_body" 2>&1 | tee -a "$LOG" || true
+        fi
+      fi
+    elif [[ "$marker_action" == "paused" ]]; then
+      decision="human"
+      should_dispatch=0
+      # breeze:human should already be set, but ensure it
+      set_breeze_state "$REPO" "$pr_number" human
+    else
+      # Divergence detected - flag for human review
+      decision="divergence"
+      should_dispatch=0
+      set_breeze_state "$REPO" "$pr_number" human
+
+      # Check if a supervisor divergence issue already exists for this PR
+      local existing_issue
+      existing_issue=$(gh issue list --repo "$REPO" --state open \
+        --search "Supervisor: Reviewer verdict divergence on PR #${pr_number} in:title" \
+        --json number --jq '.[0].number' 2>/dev/null || echo "")
+
+      if [[ -n "$existing_issue" ]]; then
+        # Update existing issue with new occurrence
+        local update_comment="**Divergence detected again**
+
+Time: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+- **Activity marker action**: \`${marker_action:-"(none)"}\`
+- **GitHub review state**: \`${gh_state:-"(none)"}\`
+- **Expected**: These should align (approved/APPROVED, requested-changes/CHANGES_REQUESTED, or paused)
+
+The \`breeze:human\` label remains on PR #${pr_number}."
+
+        gh issue comment "$existing_issue" --repo "$REPO" --body "$update_comment" 2>&1 | tee -a "$LOG" || true
+        log "updated existing supervisor divergence issue #$existing_issue with new occurrence"
+      else
+        # File new supervisor issue
         local issue_body
         issue_body=$(printf '%s\n' \
           "**Supervisor: Reviewer verdict divergence detected**" \
@@ -704,35 +777,6 @@ pick_target() {
           --title "Supervisor: Reviewer verdict divergence on PR #${pr_number}" \
           --body "$issue_body" 2>&1 | tee -a "$LOG" || true
       fi
-    elif [[ "$marker_action" == "paused" ]]; then
-      decision="human"
-      should_dispatch=0
-      # breeze:human should already be set, but ensure it
-      set_breeze_state "$REPO" "$pr_number" human
-    else
-      # Divergence detected - flag for human review
-      decision="divergence"
-      should_dispatch=0
-      set_breeze_state "$REPO" "$pr_number" human
-
-      # File supervisor issue
-      local issue_body
-      issue_body=$(printf '%s\n' \
-        "**Supervisor: Reviewer verdict divergence detected**" \
-        "" \
-        "The supervisor detected a mismatch between the reviewer's activity marker and GitHub review state for PR #${pr_number}." \
-        "" \
-        "- **Activity marker action**: \`${marker_action:-"(none)"}\`" \
-        "- **GitHub review state**: \`${gh_state:-"(none)"}\`" \
-        "- **Expected**: These should align (approved/APPROVED, requested-changes/CHANGES_REQUESTED, or paused)" \
-        "" \
-        "This indicates the reviewer agent has diverged sources of truth for its verdict. Applied \`breeze:human\` label to PR #${pr_number} pending investigation." \
-        "" \
-        "See issue #734 for context on this invariant enforcement.")
-
-      gh issue create --repo "$REPO" \
-        --title "Supervisor: Reviewer verdict divergence on PR #${pr_number}" \
-        --body "$issue_body" 2>&1 | tee -a "$LOG" || true
     fi
 
     # Log supervisor decision
