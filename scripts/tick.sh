@@ -494,369 +494,179 @@ has_human_revision_request() {
   return 1
 }
 
+# pr_pipeline_position: pure classifier for PR routing.
+#
+# Given a PR's JSON blob (as emitted by gh pr list --json) plus the pre-resolved
+# has_human_approval/has_human_revision_request results, returns exactly ONE
+# pipeline-position string on stdout:
+#
+#   quarantined            — breeze:quarantine-hotloop label set, skip
+#   wip                    — breeze:wip label set, another agent owns it
+#   human                  — breeze:human label set, awaiting human
+#   conflicted             — mergeable == CONFLICTING (drafter rebases)
+#   ready-to-merge         — approved + E2E pass at HEAD (merger)
+#   approved-e2e-stale     — approved + no E2E pass at HEAD (e2e)
+#   approved-e2e-failed    — approved + E2E trace at HEAD with no pass (supervisor)
+#   needs-drafter-feedback — human posted bee:changes-requested marker at/after HEAD (drafter)
+#   needs-drafter-review   — reviewer requested changes at HEAD (drafter)
+#   needs-review           — unreviewed at HEAD AND no approval marker (reviewer)
+#   skip                   — nothing actionable (fall through to issues)
+#
+# Replaces the old 8-branch pick_target which had overlapping conditions and
+# routing blind spots (see #809). The rule here is: compute position from
+# pure state, then route via a single table — no branch ordering can be
+# wrong because there's only one position per PR.
+pr_pipeline_position() {
+  local pr_json="$1"
+
+  local pr_sha has_wip has_human has_quarantine mergeable_state
+  pr_sha=$(echo "$pr_json" | jq -r '.headRefOid')
+  has_wip=$(echo "$pr_json" | jq -r '.labels | map(.name) | index("breeze:wip") // false' 2>/dev/null || echo "false")
+  has_human=$(echo "$pr_json" | jq -r '.labels | map(.name) | index("breeze:human") // false' 2>/dev/null || echo "false")
+  has_quarantine=$(echo "$pr_json" | jq -r '.labels | map(.name) | index("breeze:quarantine-hotloop") // false' 2>/dev/null || echo "false")
+  mergeable_state=$(echo "$pr_json" | jq -r '.mergeable // "UNKNOWN"')
+
+  # Label-based early exits, in precedence order.
+  if [[ "$has_quarantine" != "false" ]]; then echo "quarantined"; return; fi
+  if [[ "$has_wip" != "false" ]]; then echo "wip"; return; fi
+  if [[ "$has_human" != "false" ]]; then echo "human"; return; fi
+
+  # Merge conflict → drafter for rebase, regardless of approval/e2e state (#763).
+  if [[ "$mergeable_state" == "CONFLICTING" ]]; then echo "conflicted"; return; fi
+
+  # Signals we need to compute:
+  local sha7 e2e_pass_at_head e2e_any_at_head e2e_fail_at_head
+  sha7="${pr_sha:0:7}"
+  e2e_pass_at_head=$(echo "$pr_json" | jq -r --arg sha "$sha7"     'any(.comments[]?.body // ""; (contains("**E2E trace (pass)**") and contains($sha)))' 2>/dev/null || echo "false")
+  e2e_any_at_head=$(echo "$pr_json" | jq -r --arg sha "$sha7"     'any(.comments[]?.body // ""; (contains("**E2E trace") and contains($sha)))' 2>/dev/null || echo "false")
+  e2e_fail_at_head="false"
+  if [[ "$e2e_any_at_head" == "true" && "$e2e_pass_at_head" != "true" ]]; then
+    e2e_fail_at_head="true"
+  fi
+
+  # Revision request marker from human — takes priority over all other signals
+  # below (human explicitly asked for changes, regardless of prior approval).
+  if has_human_revision_request "$pr_json" "$pr_sha"; then
+    echo "needs-drafter-feedback"
+    return
+  fi
+
+  # Approval in any form: formal APPROVED review OR bee:approved-for-e2e marker.
+  # has_human_approval handles both, including single-account COMMENTED reviews
+  # with the marker (#754).
+  local approved="false"
+  if [[ "$(echo "$pr_json" | jq -r '.reviewDecision // ""')" == "APPROVED" ]]; then
+    approved="true"
+  elif has_human_approval "$pr_json" "$pr_sha"; then
+    approved="true"
+  fi
+
+  if [[ "$approved" == "true" ]]; then
+    if [[ "$e2e_pass_at_head" == "true" ]]; then
+      echo "ready-to-merge"
+    elif [[ "$e2e_fail_at_head" == "true" ]]; then
+      echo "approved-e2e-failed"
+    else
+      # Approved but no E2E at HEAD (either none at all, or only at older SHA).
+      # This is the #809 bug: old code routed here to reviewer because it
+      # counted formal reviews only. Correct action: refresh E2E at HEAD.
+      echo "approved-e2e-stale"
+    fi
+    return
+  fi
+
+  # Not approved. Figure out whether reviewer has already looked at HEAD.
+  local changes_requested_at_head reviews_at_head
+  changes_requested_at_head=$(echo "$pr_json" | jq -r --arg sha "$pr_sha"     '[.reviews[]? | select(.commit.oid == $sha and .state == "CHANGES_REQUESTED")] | length > 0' 2>/dev/null || echo "false")
+  reviews_at_head=$(echo "$pr_json" | jq -r --arg sha "$pr_sha"     '[.reviews[]? | select(.commit.oid == $sha)] | length' 2>/dev/null || echo "0")
+
+  if [[ "$changes_requested_at_head" == "true" ]]; then
+    echo "needs-drafter-review"
+    return
+  fi
+
+  # Reviewed-but-not-approved-not-changes-requested at HEAD. In single-account
+  # mode this is the common case: all reviews are COMMENTED (can't self-approve).
+  # If reviewer has already looked at HEAD, do NOT re-dispatch reviewer — the
+  # ball is in the human's court to post an approval marker or changes-requested
+  # marker. Skip.
+  if (( reviews_at_head > 0 )); then
+    echo "skip"
+    return
+  fi
+
+  # No review at HEAD at all → reviewer.
+  echo "needs-review"
+}
+
 pick_target() {
   # Emits "<kind> <number>" to stdout, nothing if idle.
   # Note: --state open excludes MERGED/CLOSED PRs per first-tree classifier precedence.
 
   local pr_basics
-  pr_basics=$(gh pr list --repo "$REPO" --state open --search "sort:created-asc" --limit 50 \
-    --json number,reviewDecision,labels,reviews,comments,headRefOid,mergeable,mergeStateStatus 2>/dev/null || echo "[]")
+  pr_basics=$(gh pr list --repo "$REPO" --state open --search "sort:created-asc" --limit 50     --json number,reviewDecision,labels,reviews,comments,headRefOid,mergeable,mergeStateStatus 2>/dev/null || echo "[]")
   # Priority sort: priority:high first, then original (created-asc) order.
   pr_basics=$(echo "$pr_basics" | jq '[ .[] | . as $p | $p + {_prio: (if ($p.labels | map(.name) | index("priority:high")) then 0 else 1 end)} ] | sort_by(._prio) | map(del(._prio))')
 
-  # 1. Approved PRs that also have a passing E2E trace → merger.
-  # "Approved" = reviewDecision == APPROVED OR a review body contains the marker.
-  # "E2E pass" = any PR issue-comment contains "**E2E trace (pass)**".
-  local mergeable_prs=""
+  # Iterate through PRs in priority order, compute each one's pipeline position,
+  # dispatch the first actionable match. Route table:
+  #
+  #   ready-to-merge         → merger
+  #   approved-e2e-stale     → e2e
+  #   approved-e2e-failed    → e2e-supervisor
+  #   conflicted             → drafter
+  #   needs-drafter-feedback → drafter
+  #   needs-drafter-review   → drafter
+  #   needs-review           → needs review from human (single-account) — skip
+  #                            unless there is already a reviewer verdict at HEAD
+  #   (all other positions)  → skip
+  #
+  # Exactly one position per PR; no blind spots because the case default is
+  # "skip" (which falls through to issues and eventually to the debt watchdog).
   local pr
   while IFS= read -r pr; do
     [[ -z "$pr" ]] && continue
-    local pr_num=$(echo "$pr" | jq -r '.number')
-    local pr_sha=$(echo "$pr" | jq -r '.headRefOid')
-    local has_wip=$(echo "$pr" | jq -r '.labels | map(.name) | index("breeze:wip") // false' 2>/dev/null || echo "false")
-    local has_human=$(echo "$pr" | jq -r '.labels | map(.name) | index("breeze:human") // false' 2>/dev/null || echo "false")
-    local has_quarantine=$(echo "$pr" | jq -r '.labels | map(.name) | index("breeze:quarantine-hotloop") // false' 2>/dev/null || echo "false")
-    local is_conflicting=$(echo "$pr" | jq -r '.mergeable == "CONFLICTING" or .mergeStateStatus == "DIRTY"' 2>/dev/null || echo "false")
-    local has_e2e_pass=$(echo "$pr" | jq -r --arg sha "${pr_sha:0:7}" '
-      any(.comments[]?.body // ""; (contains("**E2E trace (pass)**") and contains($sha)))' 2>/dev/null || echo "false")
-
-    if [[ "$has_wip" == "false" && "$has_human" == "false" && "$has_quarantine" == "false" && "$is_conflicting" == "false" && "$has_e2e_pass" == "true" ]]; then
-      if has_human_approval "$pr" "$pr_sha"; then
-        mergeable_prs="${mergeable_prs}${pr_num}"$'\n'
-      fi
-    fi
+    local pr_num position
+    pr_num=$(echo "$pr" | jq -r '.number')
+    position=$(pr_pipeline_position "$pr")
+    case "$position" in
+      ready-to-merge)
+        echo "merger $pr_num"
+        return
+        ;;
+      approved-e2e-stale)
+        echo "e2e $pr_num"
+        return
+        ;;
+      approved-e2e-failed)
+        echo "e2e-supervisor $pr_num"
+        return
+        ;;
+      conflicted|needs-drafter-feedback|needs-drafter-review)
+        echo "drafter $pr_num"
+        return
+        ;;
+      needs-review)
+        # In single-account mode the reviewer is the human. Dispatching reviewer
+        # on its own PR is useless (can't --approve). Emit an explicit "needs
+        # human attention" signal by applying breeze:human and skipping; the
+        # human reviews and posts the approval marker, which makes the next
+        # tick route to approved-e2e-stale → e2e → ready-to-merge → merger.
+        #
+        # Fallback for multi-account future: a properly-configured reviewer
+        # agent would dispatch here. For now, pause.
+        set_breeze_state "$REPO" "$pr_num" human
+        continue
+        ;;
+      quarantined|wip|human|skip)
+        continue
+        ;;
+      *)
+        log "pick_target: unknown pipeline position '$position' for PR #$pr_num — skipping"
+        continue
+        ;;
+    esac
   done < <(echo "$pr_basics" | jq -c '.[]' 2>/dev/null)
-  if [[ -n "$mergeable_prs" ]]; then
-    echo "merger $(echo "$mergeable_prs" | head -1)"
-    return
-  fi
-
-  # 1a'. Approved PRs with passing E2E but merge conflicts → drafter for rebase
-  # These PRs are ready to merge except they have conflicts with main
-  local conflicted_prs
-  conflicted_prs=$(echo "$pr_basics" | jq -r '
-    .[]
-    | . as $pr
-    | select(.labels | map(.name) | index("breeze:wip") | not)
-    | select(.labels | map(.name) | index("breeze:human") | not)
-    | select(.labels | map(.name) | index("breeze:quarantine-hotloop") | not)
-    | select(.mergeable == "CONFLICTING" or .mergeStateStatus == "DIRTY")
-    | select(
-        .reviewDecision == "APPROVED"
-        or any(.reviews[]?.body // ""; contains("<!-- bee:approved-for-e2e -->"))
-        or any(.comments[]?.body // ""; contains("<!-- bee:approved-for-e2e -->"))
-      )
-    | select(any(.comments[]?.body // "";
-        (contains("**E2E trace (pass)**") and contains($pr.headRefOid[0:7]))))
-    | .number
-  ' 2>/dev/null || true)
-  if [[ -n "$conflicted_prs" ]]; then
-    echo "drafter $(echo "$conflicted_prs" | head -1)"
-    return
-  fi
-
-  # 1b. PRs with E2E trace that needs supervisor classification
-  local traced_prs
-  traced_prs=$(echo "$pr_basics" | jq -r '
-    .[]
-    | . as $pr
-    | select(.labels | map(.name) | index("breeze:wip") | not)
-    | select(.labels | map(.name) | index("breeze:human") | not)
-    | select(.labels | map(.name) | index("breeze:quarantine-hotloop") | not)
-    | select(any(.comments[]?.body // "";
-        (contains("**E2E trace") and contains($pr.headRefOid[0:7]))))
-    | select(any(.comments[]?.body // ""; contains("**E2E trace (pass)**")) | not)
-    | select(any(.comments[]?.body // ""; contains("**e2e-supervisor:")) | not)
-    | .number
-  ' 2>/dev/null || true)
-  if [[ -n "$traced_prs" ]]; then
-    echo "e2e-supervisor $(echo "$traced_prs" | head -1)"
-    return
-  fi
-
-  # 1b'. PRs with a supervisor verdict — route based on the verdict. The
-  # `pass` verdict is covered by the approved+E2E-trace-pass route above,
-  # so here we only need to handle the five non-pass outcomes.
-  #
-  # A verdict is STALE if drafter or e2e has posted a comment after it — that
-  # means the bug was already addressed and we need a fresh E2E run to judge
-  # the new state, not to re-trigger the same role on every tick (hot-loop).
-  local supervised
-  supervised=$(echo "$pr_basics" | jq -r '
-    .[]
-    | . as $pr
-    | select($pr.labels | map(.name) | index("breeze:wip") | not)
-    | select($pr.labels | map(.name) | index("breeze:human") | not)
-    | select($pr.labels | map(.name) | index("breeze:quarantine-hotloop") | not)
-    | ([$pr.comments[]? | select(.body // "" | test("\\*\\*e2e-supervisor: (pass|lazy-run|code-bug|test-bug|design-trivial|design-conflicting)\\*\\*"))]
-        | sort_by(.createdAt) | last) as $v
-    | select($v != null)
-    | ([$pr.comments[]? | select(.createdAt > $v.createdAt) | select(.body // "" | test("^\\*\\*(drafter|e2e):"))] | length) as $followups
-    | select($followups == 0)
-    | ($v.body | capture("\\*\\*e2e-supervisor: (?<verdict>pass|lazy-run|code-bug|test-bug|design-trivial|design-conflicting)\\*\\*").verdict) as $vd
-    | "\($pr.number) \($vd)"
-  ' 2>/dev/null || true)
-  if [[ -n "$supervised" ]]; then
-    while IFS= read -r row; do
-      [[ -z "$row" ]] && continue
-      local pr_n="${row%% *}" vd="${row##* }"
-      case "$vd" in
-        lazy-run)  echo "e2e $pr_n"; return ;;
-        code-bug)  echo "drafter $pr_n"; return ;;
-        test-bug)  echo "e2e-designer $pr_n"; return ;;
-        design-conflicting)
-          # Belt-and-suspenders: supervisor should have applied breeze:human,
-          # but ensure it's labeled so this tick never re-dispatches.
-          set_breeze_state "$REPO" "$pr_n" human
-          log "skip: #$pr_n design-conflicting — labeled breeze:human, held for human"
-          ;;
-        design-trivial|pass) : ;;  # handled elsewhere / nothing to do
-      esac
-    done <<< "$supervised"
-  fi
-
-  # 1c. Approved PRs without an E2E trace yet → E2E.
-  local approved_prs=""
-  while IFS= read -r pr; do
-    [[ -z "$pr" ]] && continue
-    local pr_num=$(echo "$pr" | jq -r '.number')
-    local pr_sha=$(echo "$pr" | jq -r '.headRefOid')
-    local has_wip=$(echo "$pr" | jq -r '.labels | map(.name) | index("breeze:wip") // false' 2>/dev/null || echo "false")
-    local has_human=$(echo "$pr" | jq -r '.labels | map(.name) | index("breeze:human") // false' 2>/dev/null || echo "false")
-    local has_quarantine=$(echo "$pr" | jq -r '.labels | map(.name) | index("breeze:quarantine-hotloop") // false' 2>/dev/null || echo "false")
-    local has_e2e_trace=$(echo "$pr" | jq -r --arg sha "${pr_sha:0:7}" '
-      any(.comments[]?.body // ""; (contains("**E2E trace") and contains($sha)))' 2>/dev/null || echo "false")
-
-    if [[ "$has_wip" == "false" && "$has_human" == "false" && "$has_quarantine" == "false" && "$has_e2e_trace" == "false" ]]; then
-      if has_human_approval "$pr" "$pr_sha"; then
-        approved_prs="${approved_prs}${pr_num}"$'\n'
-      fi
-    fi
-  done < <(echo "$pr_basics" | jq -c '.[]' 2>/dev/null)
-  if [[ -n "$approved_prs" ]]; then
-    local pr_number=$(echo "$approved_prs" | head -1)
-
-    # Supervisor consistency check for reviewer verdict invariant (issue #734)
-    # Check alignment between activity log marker and GitHub review state
-    local activity_log="${LOG_DIR}/activity.ndjson"
-    local marker_action=""
-    if [[ -f "$activity_log" ]]; then
-      # Get last reviewer activity marker for this PR
-      marker_action=$(jq -r --arg pr "#${pr_number}" \
-        'select(.event == "end" and .agent == "reviewer" and .target == $pr) |
-         .outcome // ""' "$activity_log" 2>/dev/null | tail -1)
-    fi
-
-    # Get GitHub review state for the last review
-    local gh_state=""
-    gh_state=$(gh pr view "$pr_number" --repo "$REPO" --json reviews \
-      --jq '.reviews | if length > 0 then .[-1].state else "" end' 2>/dev/null || echo "")
-
-    # Log supervisor decision
-    local decision=""
-    local should_dispatch=1
-
-    # Check acceptable pairings
-    if [[ "$marker_action" == "approved" ]] && [[ "$gh_state" == "APPROVED" ]]; then
-      decision="advance"
-    elif [[ "$marker_action" == "approved" ]] && [[ "$gh_state" == "COMMENTED" ]]; then
-      # Check for self-authored escape hatch (issue #786, PR #787)
-      local pr_data
-      pr_data=$(gh pr view "$pr_number" --repo "$REPO" --json author,reviews,comments 2>/dev/null || echo "{}")
-      local pr_author=$(echo "$pr_data" | jq -r '.author.login // ""')
-      local current_user=$(gh api user --jq '.login' 2>/dev/null || echo "")
-
-      # Check if PR is self-authored and has the escape hatch marker
-      local has_marker="false"
-      if [[ "$pr_author" == "$current_user" ]] && [[ -n "$pr_author" ]]; then
-        # Look for bee:approved-for-e2e marker in reviews and comments
-        has_marker=$(echo "$pr_data" | jq -r '
-          (any(.reviews[]?.body // ""; contains("bee:approved-for-e2e")) or
-           any(.comments[]?.body // ""; contains("bee:approved-for-e2e")))' 2>/dev/null || echo "false")
-      fi
-
-      if [[ "$has_marker" == "true" ]]; then
-        # Valid escape hatch usage - proceed to e2e
-        decision="advance"
-        log "supervisor: detected valid self-authored escape hatch for PR #${pr_number}"
-      else
-        # Not a valid escape hatch - this is a divergence
-        decision="divergence"
-        should_dispatch=0
-        set_breeze_state "$REPO" "$pr_number" human
-
-        # File supervisor issue
-        local issue_body
-        issue_body=$(printf '%s\n' \
-          "**Supervisor: Reviewer verdict divergence detected**" \
-          "" \
-          "The supervisor detected a mismatch between the reviewer's activity marker and GitHub review state for PR #${pr_number}." \
-          "" \
-          "- **Activity marker action**: \`${marker_action:-"(none)"}\`" \
-          "- **GitHub review state**: \`${gh_state:-"(none)"}\`" \
-          "- **Expected**: These should align (approved/APPROVED, requested-changes/CHANGES_REQUESTED, or paused)" \
-          "" \
-          "This indicates the reviewer agent has diverged sources of truth for its verdict. Applied \`breeze:human\` label to PR #${pr_number} pending investigation." \
-          "" \
-          "See issue #734 for context on this invariant enforcement.")
-
-        gh issue create --repo "$REPO" \
-          --title "Supervisor: Reviewer verdict divergence on PR #${pr_number}" \
-          --body "$issue_body" 2>&1 | tee -a "$LOG" || true
-      fi
-    elif [[ "$marker_action" == "paused" ]]; then
-      decision="human"
-      should_dispatch=0
-      # breeze:human should already be set, but ensure it
-      set_breeze_state "$REPO" "$pr_number" human
-    else
-      # Divergence detected - flag for human review
-      decision="divergence"
-      should_dispatch=0
-      set_breeze_state "$REPO" "$pr_number" human
-
-      # Check if a supervisor divergence issue already exists for this PR
-      local existing_issue
-      existing_issue=$(gh issue list --repo "$REPO" --state open \
-        --search "Supervisor: Reviewer verdict divergence on PR #${pr_number} in:title" \
-        --json number --jq '.[0].number' 2>/dev/null || echo "")
-
-      if [[ -n "$existing_issue" ]]; then
-        # Update existing issue with new occurrence
-        local update_comment="**Divergence detected again**
-
-Time: $(date -u +%Y-%m-%dT%H:%M:%SZ)
-
-- **Activity marker action**: \`${marker_action:-"(none)"}\`
-- **GitHub review state**: \`${gh_state:-"(none)"}\`
-- **Expected**: These should align (approved/APPROVED, requested-changes/CHANGES_REQUESTED, or paused)
-
-The \`breeze:human\` label remains on PR #${pr_number}."
-
-        gh issue comment "$existing_issue" --repo "$REPO" --body "$update_comment" 2>&1 | tee -a "$LOG" || true
-        log "updated existing supervisor divergence issue #$existing_issue with new occurrence"
-      else
-        # Create new supervisor issue
-        local issue_body
-        issue_body=$(printf '%s\n' \
-          "**Supervisor: Reviewer verdict divergence detected**" \
-          "" \
-          "The supervisor detected a mismatch between the reviewer's activity marker and GitHub review state for PR #${pr_number}." \
-          "" \
-          "- **Activity marker action**: \`${marker_action:-"(none)"}\`" \
-          "- **GitHub review state**: \`${gh_state:-"(none)"}\`" \
-          "- **Expected**: These should align (approved/APPROVED, requested-changes/CHANGES_REQUESTED, or paused)" \
-          "" \
-          "This indicates the reviewer agent has diverged sources of truth for its verdict. Applied \`breeze:human\` label to PR #${pr_number} pending investigation." \
-          "" \
-          "See issue #734 for context on this invariant enforcement.")
-
-        gh issue create --repo "$REPO" \
-          --title "Supervisor: Reviewer verdict divergence on PR #${pr_number}" \
-          --body "$issue_body" 2>&1 | tee -a "$LOG" || true
-      fi
-    fi
-
-    # Log supervisor decision
-    log "supervisor: pr=${pr_number} reviewer_marker=${marker_action:-null} gh_state=${gh_state:-null} decision=${decision}"
-
-    if [[ "$should_dispatch" == "1" ]]; then
-      echo "e2e $pr_number"
-      return
-    fi
-  fi
-
-  # 2. PRs needing a reviewer — no review yet at current HEAD SHA.
-  # We inspect reviews, not reviewDecision: "COMMENTED" still leaves
-  # reviewDecision empty, but means a review exists.
-  # Skip dispatch if PR has a bee:approved-for-e2e marker in comments.
-  local pr_rows
-  pr_rows=$(gh pr list --repo "$REPO" --state open --search "sort:created-asc" --limit 50 \
-    --json number,reviewDecision,labels,reviews,headRefOid,comments 2>/dev/null || echo "[]")
-  pr_rows=$(echo "$pr_rows" | jq '[ .[] | . as $p | $p + {_prio: (if ($p.labels | map(.name) | index("priority:high")) then 0 else 1 end)} ] | sort_by(._prio) | map(del(._prio))')
-
-  # 2-pre. PRs with a human revision-request marker at/after HEAD → drafter.
-  # In single-account mode (#754) humans can't file formal --request-changes
-  # reviews on their own PRs, so a `<!-- bee:changes-requested -->` comment is
-  # the only way to signal revision intent. Must be checked before branch 2a:
-  # otherwise the dispatcher would route to reviewer, the reviewer would see a
-  # prior review at HEAD, skip, and re-apply breeze:human — wedging the PR (#780).
-  local revision_prs=""
-  while IFS= read -r pr; do
-    [[ -z "$pr" ]] && continue
-    local pr_num=$(echo "$pr" | jq -r '.number')
-    local pr_sha=$(echo "$pr" | jq -r '.headRefOid')
-    local has_wip=$(echo "$pr" | jq -r '.labels | map(.name) | index("breeze:wip") // false' 2>/dev/null || echo "false")
-    local has_human=$(echo "$pr" | jq -r '.labels | map(.name) | index("breeze:human") // false' 2>/dev/null || echo "false")
-    local has_quarantine=$(echo "$pr" | jq -r '.labels | map(.name) | index("breeze:quarantine-hotloop") // false' 2>/dev/null || echo "false")
-
-    if [[ "$has_wip" == "false" && "$has_human" == "false" && "$has_quarantine" == "false" ]]; then
-      if has_human_revision_request "$pr" "$pr_sha"; then
-        revision_prs="${revision_prs}${pr_num}"$'\n'
-      fi
-    fi
-  done < <(echo "$pr_rows" | jq -c '.[]' 2>/dev/null)
-  if [[ -n "$revision_prs" ]]; then
-    echo "drafter $(echo "$revision_prs" | head -1)"
-    return
-  fi
-
-  local unreviewed_prs=""
-  while IFS= read -r pr; do
-    [[ -z "$pr" ]] && continue
-    local pr_num=$(echo "$pr" | jq -r '.number')
-    local pr_sha=$(echo "$pr" | jq -r '.headRefOid')
-    local has_wip=$(echo "$pr" | jq -r '.labels | map(.name) | index("breeze:wip") // false' 2>/dev/null || echo "false")
-    local has_human=$(echo "$pr" | jq -r '.labels | map(.name) | index("breeze:human") // false' 2>/dev/null || echo "false")
-    local has_quarantine=$(echo "$pr" | jq -r '.labels | map(.name) | index("breeze:quarantine-hotloop") // false' 2>/dev/null || echo "false")
-    local reviews_at_head=$(echo "$pr" | jq -r --arg sha "$pr_sha" '[$pr.reviews[]? | select(.commit.oid == $sha)] | length' 2>/dev/null || echo "0")
-
-    if [[ "$has_wip" == "false" && "$has_human" == "false" && "$has_quarantine" == "false" && "$reviews_at_head" == "0" ]]; then
-      # Skip if PR already has human approval via escape hatch
-      if ! has_human_approval "$pr" "$pr_sha"; then
-        unreviewed_prs="${unreviewed_prs}${pr_num}"$'\n'
-      fi
-    fi
-  done < <(echo "$pr_rows" | jq -c '.[]' 2>/dev/null)
-  if [[ -n "$unreviewed_prs" ]]; then
-    local pr_to_check=$(echo "$unreviewed_prs" | head -1)
-
-    # Check if this PR qualifies for tiny-fix fast path
-    if check_tiny_fix "$pr_to_check"; then
-      log "tiny-fix detected: PR #$pr_to_check skipping reviewer+e2e, routing to merger"
-      echo "merger $pr_to_check"
-      return
-    fi
-
-    echo "reviewer $pr_to_check"
-    return
-  fi
-
-  # 2b. PRs with a review at HEAD but not approved + no e2e marker → drafter.
-  # Guard against re-dispatching drafter on a PR it just updated:
-  # only match if no approval marker is present AND a review at HEAD exists.
-  # Also skip if there's a bee:approved-for-e2e marker in comments.
-  local feedback_prs=""
-  while IFS= read -r pr; do
-    [[ -z "$pr" ]] && continue
-    local pr_num=$(echo "$pr" | jq -r '.number')
-    local pr_sha=$(echo "$pr" | jq -r '.headRefOid')
-    local has_wip=$(echo "$pr" | jq -r '.labels | map(.name) | index("breeze:wip") // false' 2>/dev/null || echo "false")
-    local has_human=$(echo "$pr" | jq -r '.labels | map(.name) | index("breeze:human") // false' 2>/dev/null || echo "false")
-    local has_quarantine=$(echo "$pr" | jq -r '.labels | map(.name) | index("breeze:quarantine-hotloop") // false' 2>/dev/null || echo "false")
-    local reviews_at_head=$(echo "$pr" | jq -r --arg sha "$pr_sha" '[.reviews[]? | select(.commit.oid == $sha)] | length' 2>/dev/null || echo "0")
-
-    if [[ "$has_wip" == "false" && "$has_human" == "false" && "$has_quarantine" == "false" && "$reviews_at_head" -gt "0" ]]; then
-      # Only dispatch drafter if PR doesn't have human approval
-      if ! has_human_approval "$pr" "$pr_sha"; then
-        feedback_prs="${feedback_prs}${pr_num}"$'\n'
-      fi
-    fi
-  done < <(echo "$pr_rows" | jq -c '.[]' 2>/dev/null)
-  if [[ -n "$feedback_prs" ]]; then
-    echo "drafter $(echo "$feedback_prs" | head -1)"
-    return
-  fi
 
   # 3. issues with no linked OPEN PR and no breeze:wip
   # We detect linkage by scanning open PR bodies for "Fixes #N" / "Closes #N".
