@@ -647,16 +647,14 @@ pick_target() {
         return
         ;;
       needs-review)
-        # In single-account mode the reviewer is the human. Dispatching reviewer
-        # on its own PR is useless (can't --approve). Emit an explicit "needs
-        # human attention" signal by applying breeze:human and skipping; the
-        # human reviews and posts the approval marker, which makes the next
-        # tick route to approved-e2e-stale → e2e → ready-to-merge → merger.
-        #
-        # Fallback for multi-account future: a properly-configured reviewer
-        # agent would dispatch here. For now, pause.
-        set_breeze_state "$REPO" "$pr_num" human
-        continue
+        # Reviewer dispatches and posts a comment-style review. Even in
+        # single-account mode (where it can't GitHub-approve), its written
+        # verdict is meaningful and the workflow depends on it. The #804
+        # loop this fixed was NOT "reviewer shouldn't run" — it was
+        # "reviewer kept re-running after skipping at HEAD." That's handled
+        # by the "reviewed-at-HEAD no verdict → skip" position elsewhere.
+        echo "reviewer $pr_num"
+        return
         ;;
       quarantined|wip|human|skip)
         continue
@@ -761,22 +759,22 @@ pick_target() {
         fi
       fi
     fi
-    # Guard: check if this issue already has an open PR linked to it
-    # First try broader duplicate detection (includes title/body mentions)
-    local linked_pr_json
+    # Guard: check if this issue already has an open PR linked to it.
+    # If yes, SKIP this issue — the PR block above already dispatched on
+    # the PR via pr_pipeline_position if it was actionable. Don't force
+    # drafter on the linked PR regardless of its state (that's what
+    # caused #812 to route to drafter instead of reviewer).
+    local linked_pr_json linked_pr=""
     linked_pr_json=$("$HERE/check-duplicate-pr.sh" "$REPO" "$n" 2>/dev/null || echo "")
-    local linked_pr=""
     if [[ -n "$linked_pr_json" ]]; then
       linked_pr=$(echo "$linked_pr_json" | jq -r '.number // empty')
     fi
-    # Fallback to traditional search if duplicate detector didn't find anything
     if [[ -z "$linked_pr" ]]; then
       linked_pr=$(gh pr list --repo "$REPO" --state open --search "$n in:body" --json number --jq '.[0].number' 2>/dev/null || echo "")
     fi
     if [[ -n "$linked_pr" ]]; then
-      log "redirecting issue #$n to its open PR #$linked_pr for revision (duplicate detection)"
-      echo "drafter $linked_pr"
-      return
+      log "issue #$n has open PR #$linked_pr — skipping (PR block handles its own state)"
+      continue
     fi
     echo "drafter $n"
     return
