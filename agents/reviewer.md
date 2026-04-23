@@ -50,7 +50,7 @@ Scan previous reviews at this PR. If something you would flag was already raised
 - **Write prose, not verdict tables.** No `ALIGNED / CONFLICT` labels. After the verdict header and blank line, write a normal GitHub review comment like a human reviewer would write.
 - **Do not push fixes yourself.** You are the reviewer. The drafter handles feedback on its next tick.
 - **Do not merge.** Even on approve, merging is the drafter's job (or the human's).
-- **One review per PR state.** If you already reviewed at the current HEAD SHA, skip. Re-review only when new commits land.
+- **One review per PR state.** If you already reviewed at the current HEAD SHA, skip. Re-review only when new commits land. When skipping, exit silently — **do NOT re-apply `breeze:human`, do NOT call `bee pause`, do NOT post any comment**. Leave whatever label state is there. A human who removed `breeze:human` to re-dispatch expects the loop to advance, not to bounce the label back (see #780 — the PR wedged because every skip re-labeled `breeze:human`).
 
 ## When blocked
 

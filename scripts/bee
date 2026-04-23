@@ -42,6 +42,7 @@ Usage:
   bee status             Print a terse three-section status block
   bee status --json      Same data, JSON-encoded
   bee pause <n> <reason> Label issue/PR #n with breeze:human and comment
+  bee request-changes <n> [reason]  Post a bee:changes-requested marker on PR #n (routes to drafter)
   bee config get [key]   Get configuration value(s)
   bee config set <key> <value>  Set a configuration value
   bee config add <key> <value>  Add value to list config
@@ -456,6 +457,39 @@ EOF
   echo "bee pause: labeled #${number} with breeze:human"
 }
 
+# Post a bee:changes-requested marker comment on PR #n. In single-account mode
+# (#754) this is the human-side revision-request signal — dispatcher sees the
+# marker and routes to drafter on the next tick. See #780.
+cmd_request_changes() {
+  local number="${1:-}"
+  local reason="${2:-Please address the feedback above.}"
+
+  if [[ -z "$number" ]]; then
+    echo "bee request-changes: missing PR number" >&2
+    echo "usage: bee request-changes <n> [reason]" >&2
+    exit 2
+  fi
+
+  if ! [[ "$number" =~ ^[0-9]+$ ]]; then
+    echo "bee request-changes: invalid PR number: $number" >&2
+    exit 2
+  fi
+
+  gh pr comment "$number" --repo "$REPO" --body "$(cat <<EOF
+**human:** changes requested
+
+${reason}
+
+<!-- bee:changes-requested -->
+EOF
+)" >/dev/null
+
+  # Ensure breeze:human is NOT set so the dispatcher can pick this up.
+  gh issue edit "$number" --repo "$REPO" --remove-label "breeze:human" >/dev/null 2>&1 || true
+
+  echo "bee request-changes: posted marker on #${number}"
+}
+
 CONFIG_FILE="${HOME}/.git-bee/config.json"
 
 cmd_config() {
@@ -845,6 +879,7 @@ main() {
     status)       cmd_status "$@" ;;
     log)          cmd_log "$@" ;;
     pause)        cmd_pause "$@" ;;
+    request-changes) cmd_request_changes "$@" ;;
     config)       cmd_config "$@" ;;
     watch)        cmd_watch "$@" ;;
     exclude)      cmd_exclude "$@" ;;
