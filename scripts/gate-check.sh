@@ -4,13 +4,13 @@
 # Usage: gate-check.sh <owner/repo> <issue-number>
 #
 # Exit codes:
-#   0  gate open — last body edit (or original authorship) is by the repo owner
-#      AND the first checkbox under `## Finalization gate` is `[x]`. Dispatch ok.
+#   0  gate open — EITHER (a) no `## Finalization gate` section (most issues), OR
+#      (b) has the section AND last body edit is by the repo owner AND the first
+#      checkbox under `## Finalization gate` is `[x]`. Dispatch ok.
 #   1  gate closed — checkbox unchecked, or body unreadable. Fail closed.
 #   2  gate ticked by non-owner — checkbox is `[x]` but the latest body author
 #      is not the repo owner. Bot-authored ticks don't count.
-#   3  not a design-doc issue — no `## Finalization gate` section. Caller
-#      decides policy (tick.sh treats this as "gate not applicable").
+#   3  (deprecated — now returns 0) previously indicated no gate section.
 #
 # Why GraphQL: GitHub's REST timeline API does not emit events for issue body
 # edits. `userContentEdits` on the issue node does — newest first.
@@ -43,7 +43,9 @@ gate_line=$(awk '
 ' <<<"$body")
 
 if ! grep -qE '^## Finalization gate[[:space:]]*$' <<<"$body"; then
-  exit 3
+  # No Finalization gate section: treat as gate open by default (rc=0)
+  # This allows Phase 2 routing to apply to issues without the formal header
+  exit 0
 fi
 
 if [[ -z "$gate_line" ]]; then

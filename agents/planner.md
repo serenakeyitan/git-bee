@@ -14,6 +14,8 @@ If the environment variable `GIT_BEE_LAST_FAILURE` is set, read the file at that
 
 Read finalized design-doc issues and create structured milestone plans that break the work into appropriately-sized PRs.
 
+**Skip rule:** If the issue title starts with `bug:`, `fix:`, or contains `regression`, exit with status `planner: issue=<n> action=skipped-bug-report next=none`. Bug reports don't need milestone plans.
+
 1. Read the issue body and all comments to understand the full design.
 2. Identify logical boundaries for splitting the work into separate PRs.
 3. Apply the size rule: each PR should be 100-500 lines of diff. Smaller → combine. Larger → split.
@@ -62,7 +64,7 @@ If the design is unclear or contradictory:
 
 ## Output
 
-End with: `planner: issue=<n> action=<planned|escalated-too-many-prs|gave-up-breeze-human> next=<role|none>`.
+End with: `planner: issue=<n> action=<planned|escalated-too-many-prs|gave-up-breeze-human|skipped-bug-report> next=<role|none>`.
 
 Next-role hints:
 - After planning: `next=e2e-designer`
