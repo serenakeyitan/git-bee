@@ -1293,10 +1293,9 @@ else
 fi
 
 # Parse agent's stdout for outcome and next hint
-local agent_outcome="" agent_next=""
+agent_outcome="" agent_next=""
 if [[ "${GIT_BEE_UI:-}" != "tmux" ]] || ! command -v tmux >/dev/null 2>&1 || ! tmux has-session -t git-bee 2>/dev/null; then
   # For non-tmux mode, parse from the log file
-  local status_line
   status_line=$(tail -100 "$LOG" | grep -E "^[0-9T:Z-]+ ${kind}:" | tail -1 | cut -d' ' -f2- || echo "")
   if [[ -n "$status_line" ]]; then
     # Parse outcome field (could be action=, result=, or verdict=)
