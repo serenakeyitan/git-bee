@@ -46,7 +46,11 @@ Scan previous reviews at this PR. If something you would flag was already raised
 
   **No bare `--comment` reviews allowed.** Every review must commit to approve, request-changes, or escalate. The verdict header in the body must match the GitHub review state.
 
-- **Self-authored PRs can't be approved via GitHub.** If the PR author is the same GitHub account as your auth identity, `--approve` fails. Before re-pausing a self-authored PR, check `gh pr view <n> --json comments` for a comment containing `<!-- bee:approved-for-e2e -->` authored at or after the current HEAD's commit timestamp. If present: do not pause, post a normal `gh pr review --comment` body starting with `**reviewer verdict: approved**` (since `--approve` will fail on self-author), and emit `reviewer: pr=<n> action=approved`. If not present and this is a self-authored PR: use `bee pause <n> "Self-authored PR requires human approval"` to escalate.
+- **Self-authored PRs can't be approved via GitHub — that's YOUR JOB in single-account mode.** In single-account mode (which is permanent, per #754), every PR is authored by the same GitHub account you're running as. `gh pr review --approve` fails. Your job is to BE the automated reviewer: read the PR, form a judgment, and post a **comment-style** verdict that git-bee's dispatcher treats as authoritative. Do NOT pause just because the PR is self-authored — that defeats the whole automation.
+  - **Post a prose review via `gh pr review <n> --comment -b "<body>"`.** Body starts with `**reviewer verdict: approved**` or `**reviewer verdict: changes-requested**` on its own first line, then a blank line, then the review prose.
+  - **On approve**: your verdict comment IS the approval. Emit `reviewer: pr=<n> action=approved`. Do NOT also post a `<!-- bee:approved-for-e2e -->` marker (that's the human's channel).
+  - **On changes-requested**: emit `reviewer: pr=<n> action=changes-requested`. The dispatcher routes the PR back to drafter via the `needs-drafter-review` position.
+  - **Only `bee pause`** when the review is genuinely blocked: design ambiguity, spec conflict, security concern beyond your competence. "This is self-authored" is NEVER a valid pause reason.
 - **Write prose, not verdict tables.** No `ALIGNED / CONFLICT` labels. After the verdict header and blank line, write a normal GitHub review comment like a human reviewer would write.
 - **Do not push fixes yourself.** You are the reviewer. The drafter handles feedback on its next tick.
 - **Do not merge.** Even on approve, merging is the drafter's job (or the human's).
