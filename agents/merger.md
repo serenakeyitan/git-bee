@@ -27,10 +27,12 @@ When a PR is approved AND has a passing E2E trace, merge it.
   - The E2E trace comment's sandbox short-SHA matches the PR's current HEAD short-SHA
   - The PR is mergeable (no conflicts, CI green if any)
 - **Use squash merge** with the PR title as the commit subject: `gh pr merge <n> --squash --delete-branch`.
-- **After merge:** scan the PR body for `Fixes #N` / `Closes #N`. For each linked issue:
-  - Label `breeze:done`
-  - Close if not already closed
-  - Comment: `**merger: merged**\n\nImplemented by PR #<pr>. Merged at <sha>.`
+- **After merge:**
+  - Call `set_breeze_state <repo> <pr> done` to transition the PR to breeze:done
+  - Scan the PR body for `Fixes #N` / `Closes #N`. For each linked issue:
+    - Label `breeze:done`
+    - Close if not already closed
+    - Comment: `**merger: merged**\n\nImplemented by PR #<pr>. Merged at <sha>.`
 - **Never re-open a merged PR** or un-label anything. Merger is a one-way door.
 
 ## When blocked

@@ -364,6 +364,55 @@ check_tiny_fix() {
   return 0
 }
 
+# Janitor: Clean up stale breeze labels on closed/merged items
+# This fixes the issue where merged PRs retain pre-merge breeze:* labels
+janitor_label_cleanup() {
+  # Only run if enabled
+  if [[ "${GIT_BEE_JANITOR:-1}" != "1" ]]; then
+    return
+  fi
+
+  log "running janitor label cleanup"
+
+  # Source labels.sh for set_breeze_state function
+  # shellcheck disable=SC1091
+  source "$HERE/labels.sh"
+
+  # Clean up closed issues with stale breeze labels
+  local stale_issues
+  stale_issues=$(gh issue list --repo "$REPO" --state closed --json number,labels \
+    --jq '[.[] | select(.labels | map(.name) | any(test("breeze:(human|wip|new)")))] | .[].number' 2>/dev/null || echo "")
+
+  if [[ -n "$stale_issues" ]]; then
+    for n in $stale_issues; do
+      log "janitor: transitioning closed issue #$n to breeze:done"
+      set_breeze_state "$REPO" "$n" done
+    done
+  fi
+
+  # Clean up merged/closed PRs with stale breeze labels
+  local stale_prs
+  stale_prs=$(gh pr list --repo "$REPO" --state merged --json number,labels \
+    --jq '[.[] | select(.labels | map(.name) | any(test("breeze:(human|wip|new)")))] | .[].number' 2>/dev/null || echo "")
+
+  # Also check closed (not just merged) PRs
+  local closed_prs
+  closed_prs=$(gh pr list --repo "$REPO" --state closed --json number,labels,merged \
+    --jq '[.[] | select((.merged == false) and (.labels | map(.name) | any(test("breeze:(human|wip|new)"))))] | .[].number' 2>/dev/null || echo "")
+
+  stale_prs="${stale_prs}${stale_prs:+ }${closed_prs}"
+
+  if [[ -n "$stale_prs" ]]; then
+    for n in $stale_prs; do
+      log "janitor: transitioning closed/merged PR #$n to breeze:done"
+      set_breeze_state "$REPO" "$n" done
+    done
+  fi
+}
+
+# Run janitor cleanup before finding work
+janitor_label_cleanup
+
 # Guard 2: find work
 # Priority order (PRs beat issues — if an issue already has a linked PR,
 # the PR is the next actionable step):
