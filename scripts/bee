@@ -38,6 +38,7 @@ bee — git-bee status at a glance
 
 Usage:
   bee                    Show help (this text)
+  bee version            Print the installed bee version
   bee help               Show help (this text)
   bee status             Print a terse three-section status block
   bee status --json      Same data, JSON-encoded
@@ -872,6 +873,20 @@ USAGE
   '
 }
 
+cmd_version() {
+  # Resolve VERSION file relative to the repo root (scripts/bee -> ../VERSION)
+  local repo_root version_file version
+  repo_root="$(cd "$HERE/.." && pwd)"
+  version_file="$repo_root/VERSION"
+  if [[ -f "$version_file" ]]; then
+    version=$(tr -d '[:space:]' < "$version_file")
+    echo "bee $version"
+  else
+    echo "bee (version unknown — VERSION file missing)" >&2
+    exit 1
+  fi
+}
+
 main() {
   local cmd="${1:-help}"
   shift || true
@@ -884,6 +899,7 @@ main() {
     watch)        cmd_watch "$@" ;;
     exclude)      cmd_exclude "$@" ;;
     watch-agents) cmd_watch_agents "$@" ;;
+    version|-v|--version) cmd_version ;;
     help|-h|--help) usage ;;
     *) echo "bee: unknown command: $cmd" >&2; usage >&2; exit 2 ;;
   esac
