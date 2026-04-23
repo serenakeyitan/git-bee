@@ -23,11 +23,11 @@ direct_prs=$(gh pr list --repo "$REPO" --state open --search "$ISSUE_NUM in:body
 mention_prs=$(gh pr list --repo "$REPO" --state open --search "#$ISSUE_NUM" --json number,headRefName,title,body 2>/dev/null || echo "[]")
 
 # Combine results and deduplicate
-combined=$(echo "$direct_prs" | jq -r --argjson mention "$mention_prs" '
+combined=$(echo "$direct_prs" | jq -r --argjson mention "$mention_prs" --arg issue_num "$ISSUE_NUM" '
   . + $mention |
   group_by(.number) |
   map(.[0]) |
-  map(select(.body // "" | test("#'"$ISSUE_NUM"'\\b") or (.title // "" | test("#'"$ISSUE_NUM"'\\b"))))
+  map(select(.body // "" | test("#" + $issue_num + "\\b") or (.title // "" | test("#" + $issue_num + "\\b"))))
 ')
 
 # Return the first matching PR (if any)
