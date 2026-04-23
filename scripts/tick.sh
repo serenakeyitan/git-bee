@@ -181,11 +181,11 @@ EOF
 
       # Create the issue and apply breeze:human via the labeling helper.
       # We don't set priority:high — per AGENTS.md no auto-priority labels.
-      local new_issue_url
+      new_issue_url=""
       new_issue_url=$(gh issue create --repo "$REPO" \
         --title "Automatic rollback: 3 consecutive tick crashes detected" \
         --body "$issue_body" 2>&1 | tee -a "$LOG" | tail -1 || true)
-      local new_issue_n
+      new_issue_n=""
       new_issue_n=$(echo "$new_issue_url" | grep -oE '/issues/[0-9]+' | grep -oE '[0-9]+' || echo "")
       if [[ -n "$new_issue_n" ]]; then
         set_breeze_state "$REPO" "$new_issue_n" human
@@ -221,11 +221,11 @@ EOF
 )
 
       # Create the issue and apply breeze:human via the labeling helper.
-      local new_issue_url
+      new_issue_url=""
       new_issue_url=$(gh issue create --repo "$REPO" \
         --title "Tick crashing with no rollback target available" \
         --body "$issue_body" 2>&1 | tee -a "$LOG" | tail -1 || true)
-      local new_issue_n
+      new_issue_n=""
       new_issue_n=$(echo "$new_issue_url" | grep -oE '/issues/[0-9]+' | grep -oE '[0-9]+' || echo "")
       if [[ -n "$new_issue_n" ]]; then
         set_breeze_state "$REPO" "$new_issue_n" human
