@@ -16,7 +16,7 @@ if [[ -z "$REPO" || -z "$ISSUE_NUM" ]]; then
 fi
 
 # Check for PRs with direct Fixes/Refs links to this issue
-direct_prs=$(gh pr list --repo "$REPO" --state open --search "$ISSUE_NUM in:body" --json number,headRefName,title 2>/dev/null || echo "[]")
+direct_prs=$(gh pr list --repo "$REPO" --state open --search "$ISSUE_NUM in:body" --json number,headRefName,title,body 2>/dev/null || echo "[]")
 
 # Check for PRs that mention this issue in title or body (broader search)
 # This catches PRs like "Fix divergence from #785" or "Address issue found in #798"
