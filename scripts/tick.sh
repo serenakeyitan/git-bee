@@ -1242,14 +1242,75 @@ if [[ -z "$target" ]]; then
   # loop is blocked on human action rather than finalized.
   paused_count=$(gh issue list --repo "$REPO" --state open --label "breeze:human" --json number --jq 'length' 2>/dev/null || echo 0)
   paused_count=$(( paused_count + $(gh pr list --repo "$REPO" --state open --label "breeze:human" --json number --jq 'length' 2>/dev/null || echo 0) ))
+  # Total open items across all labels (for debt detection)
+  open_issues=$(gh issue list --repo "$REPO" --state open --json number --jq 'length' 2>/dev/null || echo 0)
+  open_prs=$(gh pr list --repo "$REPO" --state open --json number --jq 'length' 2>/dev/null || echo 0)
+  total_open=$(( open_issues + open_prs ))
+
   if (( paused_count > 0 )); then
     log "idle: all open work paused on human (${paused_count} item(s) with breeze:human)"
+  elif (( total_open > 0 )); then
+    # DEBT state: idle with open items that aren't paused on human. The
+    # dispatcher couldn't route them for some reason. Track consecutive
+    # ticks in this state and alert after 3.
+    DEBT_STREAK_FILE="${LOG_DIR}/debt-streak"
+    streak=$(cat "$DEBT_STREAK_FILE" 2>/dev/null || echo 0)
+    streak=$(( streak + 1 ))
+    echo "$streak" > "$DEBT_STREAK_FILE"
+    log "idle-with-debt: ${total_open} open item(s), dispatcher returned nothing (streak=${streak})"
+    if (( streak >= 3 )); then
+      # Gather context for the alert issue
+      debt_body=$(printf '%s\n' \
+        "**Watchdog: idle-with-debt detected**" \
+        "" \
+        "Tick loop returned \`pick_target\` empty for ${streak} consecutive ticks, but ${total_open} open item(s) exist (${open_issues} issue(s) + ${open_prs} PR(s)) and none are labeled \`breeze:human\`." \
+        "" \
+        "This means the dispatcher's taxonomy has a blind spot: there is open work that does not match any routing branch. Common causes:" \
+        "" \
+        "- Open PR with no review and no formal-review state (reviewer branch doesn't match)" \
+        "- Open issue linked to an open PR but dispatcher lost the link" \
+        "- All items are quarantined (\`breeze:quarantine-hotloop\`) with no auto-release signal" \
+        "- Escape-hatch marker present but at a timestamp before HEAD" \
+        "" \
+        "**Investigation:**" \
+        "" \
+        "\`\`\`" \
+        "$(gh issue list --repo "$REPO" --state open --json number,title,labels --jq '.[] | "  #\(.number) [\(.labels | map(.name) | join(","))] \(.title)"' 2>/dev/null | head -10)" \
+        "$(gh pr list --repo "$REPO" --state open --json number,title,labels --jq '.[] | "  #\(.number) [\(.labels | map(.name) | join(","))] \(.title)"' 2>/dev/null | head -10)" \
+        "\`\`\`" \
+        "" \
+        "Auto-filed by \`scripts/tick.sh\` debt watchdog. Once a fix lands, the streak file resets on the next successful dispatch.")
+      file_or_update_issue "$REPO" "Watchdog: idle-with-debt (dispatcher blind spot)" "$debt_body" "--label priority:high" >/dev/null
+      # Reset streak after filing so we don't spam the issue every tick
+      echo "0" > "$DEBT_STREAK_FILE"
+    fi
   else
+    # Truly finalized: zero open items anywhere.
+    # One-time "project finalized" comment on the newest roadmap umbrella.
+    FINALIZED_MARKER="${LOG_DIR}/FINALIZED"
+    if [[ ! -f "$FINALIZED_MARKER" ]]; then
+      # Try to find the most recent roadmap umbrella (title starts with "v" or contains "roadmap")
+      umbrella=$(gh issue list --repo "$REPO" --state closed --limit 20 --search "roadmap in:title" --json number,title --jq '.[0].number' 2>/dev/null || echo "")
+      if [[ -n "$umbrella" ]]; then
+        gh issue comment "$umbrella" --repo "$REPO" --body "**bot: project finalized**
+
+All open issues and PRs on the repo are closed. Tick loop will remain idle until new work is filed. Auto-filed by \`scripts/tick.sh\` on $(date -u +%Y-%m-%dT%H:%M:%SZ)." >/dev/null 2>&1 || true
+        log "project-finalized: posted completion note on umbrella #$umbrella"
+      else
+        log "project-finalized: no roadmap umbrella found to annotate"
+      fi
+      touch "$FINALIZED_MARKER"
+    fi
     log "idle: no unclaimed open items — project finalized or nothing to do"
   fi
   log "tick end (pid=$$ exit=idle)"
   exit 0
 fi
+
+# Reaching here means dispatch happened — reset debt streak (if any)
+rm -f "${LOG_DIR}/debt-streak" 2>/dev/null || true
+# And clear the FINALIZED marker since we are no longer finalized
+rm -f "${LOG_DIR}/FINALIZED" 2>/dev/null || true
 
 kind="${target%% *}"
 number="${target##* }"
