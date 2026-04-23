@@ -952,11 +952,19 @@ The \`breeze:human\` label remains on PR #${pr_number}."
       fi
     fi
     # Guard: check if this issue already has an open PR linked to it
-    # If it does, skip dispatching drafter and log warning
-    local linked_pr
-    linked_pr=$(gh pr list --repo "$REPO" --state open --search "$n in:body" --json number --jq '.[0].number' 2>/dev/null || echo "")
+    # First try broader duplicate detection (includes title/body mentions)
+    local linked_pr_json
+    linked_pr_json=$("$HERE/check-duplicate-pr.sh" "$REPO" "$n" 2>/dev/null || echo "")
+    local linked_pr=""
+    if [[ -n "$linked_pr_json" ]]; then
+      linked_pr=$(echo "$linked_pr_json" | jq -r '.number // empty')
+    fi
+    # Fallback to traditional search if duplicate detector didn't find anything
+    if [[ -z "$linked_pr" ]]; then
+      linked_pr=$(gh pr list --repo "$REPO" --state open --search "$n in:body" --json number --jq '.[0].number' 2>/dev/null || echo "")
+    fi
     if [[ -n "$linked_pr" ]]; then
-      log "redirecting issue #$n to its open PR #$linked_pr for revision"
+      log "redirecting issue #$n to its open PR #$linked_pr for revision (duplicate detection)"
       echo "drafter $linked_pr"
       return
     fi
