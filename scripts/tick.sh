@@ -1164,7 +1164,7 @@ check_quarantine_release() {
   # Find the last hot-loop event for this target (when quarantine was applied)
   # We look for a tick log entry about hot-loop detection
   local quarantine_time
-  quarantine_time=$(grep "hot loop detected.*#$number" "$LOG" 2>/dev/null | tail -1 | awk '{print $1"T"$2}' || echo "")
+  quarantine_time=$(grep "hot loop detected.*#$number" "$LOG" 2>/dev/null | tail -1 | awk '{print $1}' || echo "")
 
   if [[ -z "$quarantine_time" ]]; then
     return  # Can't find when quarantine was applied
@@ -1193,9 +1193,17 @@ check_quarantine_release() {
     # Fetch the branch to ensure we have latest commits
     git fetch origin "$pr_branch" --quiet 2>/dev/null || true
 
-    # Check if there are commits after quarantine time
-    local newer_commits
-    newer_commits=$(git log "origin/$pr_branch" --since="@{$quarantine_ts}" --format="%H" 2>/dev/null | head -1 || echo "")
+    # Check if there are commits after quarantine time.
+    # git --since does not accept @{<unix_ts>} (that's reflog syntax); convert
+    # to an ISO date string first. Handle BSD/macOS (-r N) and GNU (-d @N) date.
+    local quarantine_iso
+    quarantine_iso=$(date -u -r "$quarantine_ts" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+      || date -u -d "@$quarantine_ts" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+      || echo "")
+    local newer_commits=""
+    if [[ -n "$quarantine_iso" ]]; then
+      newer_commits=$(git log "origin/$pr_branch" --since="$quarantine_iso" --format="%H" 2>/dev/null | head -1 || echo "")
+    fi
 
     if [[ -n "$newer_commits" ]]; then
       log "auto-releasing quarantine on #$number (new commits detected)"
