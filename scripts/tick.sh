@@ -137,6 +137,14 @@ trap record_tick_exit EXIT
 # Capture current SHA at start
 TICK_START_SHA=$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo "unknown")
 
+# Guard -1 (moved up): ROLLBACK marker — if it exists, exit early without dispatching
+# This must run BEFORE the crash detector to prevent rollback loops
+if [[ -f "$ROLLBACK_MARKER" ]]; then
+  log "ROLLBACK marker exists — ticks paused. Remove $ROLLBACK_MARKER to resume."
+  log "tick end (pid=$$ exit=rollback-marker)"
+  exit 0
+fi
+
 # Guard -0: 3-consecutive-crash detector
 if [[ -f "$TICK_HISTORY" ]]; then
   # Count non-zero exits in last 3 ticks (Guard 0 exits with 0 by design)
@@ -232,13 +240,6 @@ EOF
       fi
     fi
   fi
-fi
-
-# Guard -1: ROLLBACK marker — if it exists, exit early without dispatching
-if [[ -f "$ROLLBACK_MARKER" ]]; then
-  log "ROLLBACK marker exists — ticks paused. Remove $ROLLBACK_MARKER to resume."
-  log "tick end (pid=$$ exit=rollback-marker)"
-  exit 0
 fi
 
 # Guard 0: credential healthcheck. A tick that runs with expired gh auth
