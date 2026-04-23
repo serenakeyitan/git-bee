@@ -587,6 +587,59 @@ pick_target() {
       should_dispatch=0
       # breeze:human should already be set, but ensure it
       set_breeze_state "$REPO" "$pr_number" human
+    elif [[ "$marker_action" == "approved" ]] && [[ "$gh_state" == "COMMENTED" ]]; then
+      # Check if this is a self-authored PR with bee:approved-for-e2e marker (escape hatch)
+      local is_self_authored=0
+      local has_bee_marker=0
+
+      # Check if PR is self-authored
+      local pr_author
+      pr_author=$(gh pr view "$pr_number" --repo "$REPO" --json author --jq '.author.login' 2>/dev/null || echo "")
+      local current_user
+      current_user=$(gh api user --jq '.login' 2>/dev/null || echo "")
+
+      if [[ -n "$pr_author" && -n "$current_user" && "$pr_author" == "$current_user" ]]; then
+        is_self_authored=1
+      fi
+
+      # Check for bee:approved-for-e2e marker
+      local pr_data
+      pr_data=$(gh pr view "$pr_number" --repo "$REPO" --json reviews,comments 2>/dev/null || echo "{}")
+      if echo "$pr_data" | jq -e '
+        (.reviews[]?.body // "", .comments[]?.body // "")
+        | contains("<!-- bee:approved-for-e2e -->")' 2>/dev/null | grep -q true; then
+        has_bee_marker=1
+      fi
+
+      if [[ "$is_self_authored" == "1" && "$has_bee_marker" == "1" ]]; then
+        # Valid escape hatch usage
+        decision="advance"
+        log "supervisor: pr=${pr_number} self-authored-escape-hatch=true decision=advance"
+      else
+        # Actual divergence - flag for human review
+        decision="divergence"
+        should_dispatch=0
+        set_breeze_state "$REPO" "$pr_number" human
+
+        # File supervisor issue
+        local issue_body
+        issue_body=$(printf '%s\n' \
+          "**Supervisor: Reviewer verdict divergence detected**" \
+          "" \
+          "The supervisor detected a mismatch between the reviewer's activity marker and GitHub review state for PR #${pr_number}." \
+          "" \
+          "- **Activity marker action**: \`${marker_action:-"(none)"}\`" \
+          "- **GitHub review state**: \`${gh_state:-"(none)"}\`" \
+          "- **Expected**: These should align (approved/APPROVED, requested-changes/CHANGES_REQUESTED, or paused)" \
+          "" \
+          "This indicates the reviewer agent has diverged sources of truth for its verdict. Applied \`breeze:human\` label to PR #${pr_number} pending investigation." \
+          "" \
+          "See issue #734 for context on this invariant enforcement.")
+
+        gh issue create --repo "$REPO" \
+          --title "Supervisor: Reviewer verdict divergence on PR #${pr_number}" \
+          --body "$issue_body" 2>&1 | tee -a "$LOG" || true
+      fi
     else
       # Divergence detected - flag for human review
       decision="divergence"
