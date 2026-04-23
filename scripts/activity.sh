@@ -208,13 +208,27 @@ cmd_start() {
 
 cmd_end() {
   local repo="$1" kind="$2" number="$3" agent_id="$4" exit_code="$5" duration_s="$6"
+  # New optional parameters for outcome and next hint from agent stdout
+  local stdout_outcome="${7:-}" stdout_next="${8:-}"
+
   local meta target_kind title umbrella outcome next_hint
   meta=$(resolve_target "$repo" "$number")
   target_kind=$(cut -f1 <<<"$meta")
   title=$(cut -f2 <<<"$meta")
   umbrella=$(cut -f3 <<<"$meta")
-  outcome=$(scrape_outcome "$repo" "$number" "$kind")
-  next_hint=$(scrape_next_hint "$repo" "$number" "$kind")
+
+  # Prefer stdout-provided values, fall back to scraping
+  if [[ -n "$stdout_outcome" ]]; then
+    outcome="$stdout_outcome"
+  else
+    outcome=$(scrape_outcome "$repo" "$number" "$kind")
+  fi
+
+  if [[ -n "$stdout_next" ]]; then
+    next_hint="$stdout_next"
+  else
+    next_hint=$(scrape_next_hint "$repo" "$number" "$kind")
+  fi
 
   local json
   json=$(jq -cn \
