@@ -1362,7 +1362,7 @@ if [[ "${GIT_BEE_UI:-}" == "tmux" ]] && command -v tmux >/dev/null 2>&1 && tmux 
   log "dispatching ${kind} to tmux window '${kind}-#${number}'"
 
   # Write prompt to temp file to avoid shell escaping issues
-  local prompt_file="/tmp/git-bee-prompt-${kind}-${number}.txt"
+  prompt_file="/tmp/git-bee-prompt-${kind}-${number}.txt"
   echo "$prompt" > "$prompt_file"
 
   # Create new window and run claude with the prompt file
@@ -1389,18 +1389,18 @@ else
   # Original headless mode
   if [[ "$kind" == "e2e" ]]; then
     # Write prompt to temp file for wrapper
-    local prompt_file="/tmp/git-bee-prompt-${kind}-${number}.txt"
+    prompt_file="/tmp/git-bee-prompt-${kind}-${number}.txt"
     echo "$prompt" > "$prompt_file"
 
     # Use wrapper for e2e agent to capture metrics
-    local output_file="/tmp/git-bee-agent-output-$$"
+    output_file="/tmp/git-bee-agent-output-$$"
     "$HERE/e2e-agent-wrapper.sh" "$number" "$prompt_file" 2>&1 | tee "$output_file" | tee -a "$LOG" || {
       exit_code=$?
 
       # Parse agent's stdout for outcome and next hint
-      local agent_outcome="" agent_next=""
+      agent_outcome="" agent_next=""
       if [[ -f "$output_file" ]]; then
-        local status_line
+        status_line
         status_line=$(grep -E "^${kind}:" "$output_file" | tail -1 || echo "")
         if [[ -n "$status_line" ]]; then
           # Parse outcome field (could be action=, result=, or verdict=)
@@ -1428,9 +1428,9 @@ else
       exit "$exit_code"
     }
     # Parse agent's stdout for successful e2e run
-    local agent_outcome="" agent_next=""
+    agent_outcome="" agent_next=""
     if [[ -f "$output_file" ]]; then
-      local status_line
+      status_line
       status_line=$(grep -E "^${kind}:" "$output_file" | tail -1 || echo "")
       if [[ -n "$status_line" ]]; then
         # Parse outcome field (could be action=, result=, or verdict=)
@@ -1442,15 +1442,15 @@ else
     rm -f "$prompt_file" "$output_file"
   else
     # Capture agent output to parse the status line
-    local output_file="/tmp/git-bee-agent-output-$$"
+    output_file="/tmp/git-bee-agent-output-$$"
     "$CLAUDE_BIN" -p "$prompt" --permission-mode bypassPermissions 2>&1 | tee "$output_file" | tee -a "$LOG" || {
       exit_code=$?
       log "agent exited non-zero (${exit_code}) for #${number}"
 
       # Parse agent's stdout for outcome and next hint
-      local agent_outcome="" agent_next=""
+      agent_outcome="" agent_next=""
       if [[ -f "$output_file" ]]; then
-        local status_line
+        status_line
         status_line=$(grep -E "^${kind}:" "$output_file" | tail -1 || echo "")
         if [[ -n "$status_line" ]]; then
           # Parse outcome field (could be action=, result=, or verdict=)
