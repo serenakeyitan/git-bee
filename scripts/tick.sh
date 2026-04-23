@@ -417,6 +417,34 @@ has_human_approval() {
   return 1
 }
 
+# Returns 0 if PR has a human revision-request marker in a comment at/after
+# HEAD SHA timestamp. This is the revision-direction counterpart to the
+# bee:approved-for-e2e escape hatch: in single-account mode (#754) humans
+# cannot post formal `--request-changes` reviews on their own PRs, so the
+# dispatcher needs a way to recognize "please fix this" intent in comments.
+# See #780.
+has_human_revision_request() {
+  local pr_json="$1"
+  local pr_head_sha="$2"
+
+  local head_timestamp
+  head_timestamp=$(git -C "$REPO_ROOT" show -s --format=%ct "$pr_head_sha" 2>/dev/null || echo "0")
+
+  local has_marker_in_comments
+  has_marker_in_comments=$(echo "$pr_json" | jq --arg head_ts "$head_timestamp" '
+    any(.comments[]?;
+      (.body // "" | contains("<!-- bee:changes-requested -->")) and
+      ((.createdAt // "" | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) >= ($head_ts | tonumber))
+    )
+  ' 2>/dev/null || echo "false")
+
+  if [[ "$has_marker_in_comments" == "true" ]]; then
+    return 0
+  fi
+
+  return 1
+}
+
 pick_target() {
   # Emits "<kind> <number>" to stdout, nothing if idle.
   # Note: --state open excludes MERGED/CLOSED PRs per first-tree classifier precedence.
@@ -630,6 +658,32 @@ pick_target() {
   pr_rows=$(gh pr list --repo "$REPO" --state open --search "sort:created-asc" --limit 50 \
     --json number,reviewDecision,labels,reviews,headRefOid,comments 2>/dev/null || echo "[]")
   pr_rows=$(echo "$pr_rows" | jq '[ .[] | . as $p | $p + {_prio: (if ($p.labels | map(.name) | index("priority:high")) then 0 else 1 end)} ] | sort_by(._prio) | map(del(._prio))')
+
+  # 2-pre. PRs with a human revision-request marker at/after HEAD → drafter.
+  # In single-account mode (#754) humans can't file formal --request-changes
+  # reviews on their own PRs, so a `<!-- bee:changes-requested -->` comment is
+  # the only way to signal revision intent. Must be checked before branch 2a:
+  # otherwise the dispatcher would route to reviewer, the reviewer would see a
+  # prior review at HEAD, skip, and re-apply breeze:human — wedging the PR (#780).
+  local revision_prs=""
+  while IFS= read -r pr; do
+    [[ -z "$pr" ]] && continue
+    local pr_num=$(echo "$pr" | jq -r '.number')
+    local pr_sha=$(echo "$pr" | jq -r '.headRefOid')
+    local has_wip=$(echo "$pr" | jq -r '.labels | map(.name) | index("breeze:wip") // false' 2>/dev/null || echo "false")
+    local has_human=$(echo "$pr" | jq -r '.labels | map(.name) | index("breeze:human") // false' 2>/dev/null || echo "false")
+    local has_quarantine=$(echo "$pr" | jq -r '.labels | map(.name) | index("breeze:quarantine-hotloop") // false' 2>/dev/null || echo "false")
+
+    if [[ "$has_wip" == "false" && "$has_human" == "false" && "$has_quarantine" == "false" ]]; then
+      if has_human_revision_request "$pr" "$pr_sha"; then
+        revision_prs="${revision_prs}${pr_num}"$'\n'
+      fi
+    fi
+  done < <(echo "$pr_rows" | jq -c '.[]' 2>/dev/null)
+  if [[ -n "$revision_prs" ]]; then
+    echo "drafter $(echo "$revision_prs" | head -1)"
+    return
+  fi
 
   local unreviewed_prs=""
   while IFS= read -r pr; do
