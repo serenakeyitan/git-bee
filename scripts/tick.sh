@@ -441,7 +441,7 @@ janitor_label_cleanup
 # Guard 2: find work
 # Priority order (PRs beat issues — if an issue already has a linked PR,
 # the PR is the next actionable step):
-#   1. approved PRs → e2e agent
+#   1. approved PRs → test-agent
 #   2. unreviewed open PRs → reviewer agent
 #   3. issues with NO linked open PR and no breeze:wip → drafter agent
 # Returns 0 if PR has valid human approval (GitHub APPROVED review OR
@@ -547,8 +547,8 @@ has_human_revision_request() {
 #   human                  — breeze:human label set, awaiting human
 #   conflicted             — mergeable == CONFLICTING (drafter rebases)
 #   ready-to-merge         — approved + E2E pass at HEAD (merger)
-#   approved-e2e-stale     — approved + no E2E pass at HEAD (e2e)
-#   approved-e2e-failed    — approved + E2E trace at HEAD with no pass (supervisor)
+#   approved-e2e-stale     — approved + no E2E pass at HEAD (test-agent)
+#   approved-e2e-failed    — approved + E2E trace at HEAD with no pass (test-agent)
 #   needs-drafter-feedback — human posted bee:changes-requested marker at/after HEAD (drafter)
 #   needs-drafter-review   — reviewer requested changes at HEAD (drafter)
 #   needs-review           — unreviewed at HEAD AND no approval marker (reviewer)
@@ -654,8 +654,8 @@ pick_target() {
   # dispatch the first actionable match. Route table:
   #
   #   ready-to-merge         → merger
-  #   approved-e2e-stale     → e2e
-  #   approved-e2e-failed    → e2e-supervisor
+  #   approved-e2e-stale     → test-agent
+  #   approved-e2e-failed    → test-agent
   #   conflicted             → drafter
   #   needs-drafter-feedback → drafter
   #   needs-drafter-review   → drafter
@@ -677,11 +677,11 @@ pick_target() {
         return
         ;;
       approved-e2e-stale)
-        echo "e2e $pr_num"
+        echo "test-agent $pr_num"
         return
         ;;
       approved-e2e-failed)
-        echo "e2e-supervisor $pr_num"
+        echo "test-agent $pr_num"
         return
         ;;
       conflicted|needs-drafter-feedback|needs-drafter-review)
@@ -755,48 +755,22 @@ pick_target() {
 
         # Check for E2E test plan
         if ! echo "$issue_body" | grep -q "^## E2E test plan"; then
-          echo "e2e-designer $n"
+          echo "test-agent $n"
           return
         fi
 
         # Check if plan confirmation gate is checked
         if echo "$issue_body" | grep -q "^- \[x\] \*\*plan confirmed"; then
-          # If every PR number enumerated in the milestone plan is merged, route
-          # to the auditor. Otherwise continue with drafter.
-          # grep returns 1 when no match; under `set -euo pipefail` that aborts
-          # the whole function silently. Wrap so an empty plan list is a valid
-          # "no PRs enumerated" signal, not a fatal error.
-          local plan_prs
-          plan_prs=$({ echo "$issue_body" | awk '/^## Milestone plan/,/^## /' \
-            | grep -oE '^### PR [0-9]+' | grep -oE '[0-9]+' | sort -u; } || true)
-          if [[ -n "$plan_prs" ]]; then
-            local all_merged=1
-            local any_pr=0
-            while IFS= read -r pr_ref; do
-              [[ -z "$pr_ref" ]] && continue
-              any_pr=1
-              # Look for a merged PR whose body contains "PR <ref>" heading or
-              # whose title starts with "PR <ref>". We approximate by checking
-              # that SOME merged PR references this milestone slot via its
-              # linked issue body — cheap heuristic: scan closed PRs' titles.
-              local slot_hit
-              slot_hit=$(gh pr list --repo "$REPO" --state merged --search "PR $pr_ref in:title" --json number --jq 'length' 2>/dev/null || echo 0)
-              if [[ "$slot_hit" == "0" ]]; then
-                all_merged=0
-                break
-              fi
-            done <<< "$plan_prs"
-            if [[ "$any_pr" == "1" && "$all_merged" == "1" ]]; then
-              echo "auditor $n"
-              return
-            fi
-          fi
+          # If every PR number enumerated in the milestone plan is merged,
+          # the issue will be closed by merger. Otherwise continue with drafter.
+          # The auditor role is removed in v0.2.0. Merger now handles umbrella closing.
+          # Skip the check for all PRs being merged - continue to drafter.
           # Plan is confirmed, proceed to drafter
           echo "drafter $n"
           return
         else
-          # Has test plan but needs supervisor review
-          echo "e2e-supervisor $n"
+          # Has test plan but needs review
+          echo "test-agent $n"
           return
         fi
       fi
@@ -1216,7 +1190,7 @@ kind="${target%% *}"
 number="${target##* }"
 
 # E2E skip logic for script/docs-only PRs (issue #749)
-if [[ "$kind" == "e2e" ]]; then
+if [[ "$kind" == "test-agent" ]]; then
   # Get the list of changed files in the PR
   changed_files=$(gh pr view "$number" --repo "$REPO" --json files --jq '.files[].path' 2>/dev/null || echo "")
 
@@ -1247,7 +1221,7 @@ if [[ "$kind" == "e2e" ]]; then
     done <<< "$changed_files"
 
     if [[ "$should_skip" == "1" ]]; then
-      log "e2e: pr=$number result=skipped-scripts-only (only touches *.sh/*.md/agents/docs/tests)"
+      log "test-agent: pr=$number result=skipped-scripts-only (only touches *.sh/*.md/agents/docs/tests)"
 
       # Post comment on PR with synthetic e2e marker
       pr_head_sha=$(gh pr view "$number" --repo "$REPO" --json headRefOid --jq '.headRefOid[0:7]' 2>/dev/null || echo "unknown")
@@ -1268,7 +1242,7 @@ E2E sandbox run skipped as these changes don't affect runtime behavior. Automati
 
       # Switch to merger dispatch
       kind="merger"
-      log "switching dispatch: e2e→merger for scripts-only PR #$number"
+      log "switching dispatch: test-agent→merger for scripts-only PR #$number"
     fi
   fi
 fi
@@ -1498,10 +1472,10 @@ if [[ "${GIT_BEE_UI:-}" == "tmux" ]] && command -v tmux >/dev/null 2>&1 && tmux 
 
   # Create new window and run claude with the prompt file
   # Note: self-triggering happens at the end of the tmux command via tick.sh call
-  if [[ "$kind" == "e2e" ]]; then
-    # Use wrapper for e2e agent to capture metrics
+  if [[ "$kind" == "test-agent" ]]; then
+    # Use wrapper for test-agent to capture metrics
     tmux new-window -t git-bee: -n "${kind}-#${number}" \
-      "cd '$REPO_ROOT' && output_file=\"/tmp/git-bee-agent-output-\$\$\"; '$HERE/e2e-agent-wrapper.sh' '$number' '$prompt_file' 2>&1 | tee \"\$output_file\" | tee -a '$LOG'; exit_code=\$?; status_line=\$(grep -E \"^${kind}:\" \"\$output_file\" 2>/dev/null | tail -1 || echo \"\"); agent_outcome=\$(echo \"\$status_line\" | grep -oE '(action|result|verdict)=[^ ]+' | cut -d= -f2 | head -1 || echo \"\"); agent_next=\$(echo \"\$status_line\" | grep -oE 'next=[^ ]+' | cut -d= -f2 | head -1 || echo \"\"); rm -f \"\$output_file\" '$prompt_file'; echo ''; echo \"Agent exited with code \$exit_code\"; '$REPO_ROOT/scripts/activity.sh' end '$REPO' '$kind' '$number' '$agent_id' \$exit_code \$(( SECONDS - $DISPATCH_START_TS )) \"\$agent_outcome\" \"\$agent_next\" 2>/dev/null || true; sleep 2; echo 'Self-triggering next tick (issue #724)'; '$HERE/tick.sh' 2>&1 | tail -5; sleep 3; exit \$exit_code"
+      "cd '$REPO_ROOT' && output_file=\"/tmp/git-bee-agent-output-\$\$\"; '$HERE/test-agent-wrapper.sh' '$number' '$prompt_file' 2>&1 | tee \"\$output_file\" | tee -a '$LOG'; exit_code=\$?; status_line=\$(grep -E \"^${kind}:\" \"\$output_file\" 2>/dev/null | tail -1 || echo \"\"); agent_outcome=\$(echo \"\$status_line\" | grep -oE '(action|result|verdict)=[^ ]+' | cut -d= -f2 | head -1 || echo \"\"); agent_next=\$(echo \"\$status_line\" | grep -oE 'next=[^ ]+' | cut -d= -f2 | head -1 || echo \"\"); rm -f \"\$output_file\" '$prompt_file'; echo ''; echo \"Agent exited with code \$exit_code\"; '$REPO_ROOT/scripts/activity.sh' end '$REPO' '$kind' '$number' '$agent_id' \$exit_code \$(( SECONDS - $DISPATCH_START_TS )) \"\$agent_outcome\" \"\$agent_next\" 2>/dev/null || true; sleep 2; echo 'Self-triggering next tick (issue #724)'; '$HERE/tick.sh' 2>&1 | tail -5; sleep 3; exit \$exit_code"
   else
     tmux new-window -t git-bee: -n "${kind}-#${number}" \
       "cd '$REPO_ROOT' && output_file=\"/tmp/git-bee-agent-output-\$\$\"; '$CLAUDE_BIN' -p \"\$(cat '$prompt_file')\" --permission-mode bypassPermissions 2>&1 | tee \"\$output_file\" | tee -a '$LOG'; exit_code=\$?; status_line=\$(grep -E \"^${kind}:\" \"\$output_file\" 2>/dev/null | tail -1 || echo \"\"); agent_outcome=\$(echo \"\$status_line\" | grep -oE '(action|result|verdict)=[^ ]+' | cut -d= -f2 | head -1 || echo \"\"); agent_next=\$(echo \"\$status_line\" | grep -oE 'next=[^ ]+' | cut -d= -f2 | head -1 || echo \"\"); rm -f \"\$output_file\" '$prompt_file'; echo ''; echo \"Agent exited with code \$exit_code\"; '$REPO_ROOT/scripts/activity.sh' end '$REPO' '$kind' '$number' '$agent_id' \$exit_code \$(( SECONDS - $DISPATCH_START_TS )) \"\$agent_outcome\" \"\$agent_next\" 2>/dev/null || true; sleep 2; echo 'Self-triggering next tick (issue #724)'; '$HERE/tick.sh' 2>&1 | tail -5; sleep 3; exit \$exit_code"
@@ -1518,14 +1492,14 @@ if [[ "${GIT_BEE_UI:-}" == "tmux" ]] && command -v tmux >/dev/null 2>&1 && tmux 
   # Don't self-trigger here since tmux window will handle it
 else
   # Original headless mode
-  if [[ "$kind" == "e2e" ]]; then
+  if [[ "$kind" == "test-agent" ]]; then
     # Write prompt to temp file for wrapper
     prompt_file="/tmp/git-bee-prompt-${kind}-${number}.txt"
     echo "$prompt" > "$prompt_file"
 
-    # Use wrapper for e2e agent to capture metrics
+    # Use wrapper for test-agent to capture metrics
     output_file="/tmp/git-bee-agent-output-$$"
-    "$HERE/e2e-agent-wrapper.sh" "$number" "$prompt_file" 2>&1 | tee "$output_file" | tee -a "$LOG" || {
+    "$HERE/test-agent-wrapper.sh" "$number" "$prompt_file" 2>&1 | tee "$output_file" | tee -a "$LOG" || {
       exit_code=$?
 
       # Parse agent's stdout for outcome and next hint
@@ -1557,7 +1531,7 @@ else
       rm -f "$LOCK"
       exit "$exit_code"
     }
-    # Parse agent's stdout for successful e2e run
+    # Parse agent's stdout for successful test run
     agent_outcome="" agent_next=""
     if [[ -f "$output_file" ]]; then
       status_line
