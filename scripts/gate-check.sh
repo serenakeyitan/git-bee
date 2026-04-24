@@ -4,8 +4,9 @@
 # Usage: gate-check.sh <owner/repo> <issue-number>
 #
 # Exit codes:
-#   0  gate open — last body edit (or original authorship) is by the repo owner
-#      AND the first checkbox under `## Finalization gate` is `[x]`. Dispatch ok.
+#   0  gate open — EITHER (a) no `## Finalization gate` section (most issues), OR
+#      (b) has the section AND last body edit is by the repo owner AND the first
+#      checkbox under `## Finalization gate` is `[x]`. Dispatch ok.
 #   1  gate closed — checkbox unchecked, or body unreadable. Fail closed.
 #   2  gate ticked by non-owner — checkbox is `[x]` but the latest body author
 #      is not the repo owner. Bot-authored ticks don't count.
