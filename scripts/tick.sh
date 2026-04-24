@@ -1534,7 +1534,6 @@ else
     # Parse agent's stdout for successful test run
     agent_outcome="" agent_next=""
     if [[ -f "$output_file" ]]; then
-      status_line
       status_line=$(grep -E "^${kind}:" "$output_file" | tail -1 || echo "")
       if [[ -n "$status_line" ]]; then
         # Parse outcome field (could be action=, result=, or verdict=)
