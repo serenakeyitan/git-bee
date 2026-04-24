@@ -488,6 +488,23 @@ has_human_approval() {
     return 0
   fi
 
+  # Check for reviewer verdict in review bodies at/after HEAD timestamp.
+  # In single-account mode the reviewer agent cannot formally --approve its own
+  # PR; it posts a COMMENTED review whose body starts with
+  # **reviewer verdict: approved** (per agents/reviewer.md). Treat that body
+  # marker as authoritative approval — same way we treat the human's HTML
+  # marker. See #798 / role simplification and #827 for context.
+  local has_reviewer_verdict_approved
+  has_reviewer_verdict_approved=$(echo "$pr_json" | jq --arg head_ts "$head_timestamp" '
+    any(.reviews[]?;
+      (.body // "" | test("\\*\\*reviewer verdict: approved\\*\\*")) and
+      ((.submittedAt // "" | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) >= ($head_ts | tonumber))
+    )
+  ' 2>/dev/null || echo "false")
+  if [[ "$has_reviewer_verdict_approved" == "true" ]]; then
+    return 0
+  fi
+
   return 1
 }
 
