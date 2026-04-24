@@ -10,7 +10,8 @@
 #   1  gate closed — checkbox unchecked, or body unreadable. Fail closed.
 #   2  gate ticked by non-owner — checkbox is `[x]` but the latest body author
 #      is not the repo owner. Bot-authored ticks don't count.
-#   3  (deprecated — now returns 0) previously indicated no gate section.
+#   3  [deprecated] Previously: no `## Finalization gate` section.
+#      Now returns 0 to enable Phase 2 routing for all issues.
 #
 # Why GraphQL: GitHub's REST timeline API does not emit events for issue body
 # edits. `userContentEdits` on the issue node does — newest first.
@@ -43,8 +44,6 @@ gate_line=$(awk '
 ' <<<"$body")
 
 if ! grep -qE '^## Finalization gate[[:space:]]*$' <<<"$body"; then
-  # No Finalization gate section: treat as gate open by default (rc=0)
-  # This allows Phase 2 routing to apply to issues without the formal header
   exit 0
 fi
 
