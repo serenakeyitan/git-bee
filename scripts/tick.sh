@@ -940,6 +940,34 @@ check_next_hint() {
   echo "$next_role"
 }
 
+# Meta-loop detector (M1/PR3, refs #798).
+# Counts "Hot-loop detected again" update comments posted on an existing
+# hot-loop issue within the last hour. When ≥2 re-fires happen in that window,
+# both the agent and the underlying PR are stuck in a cascade: the dedup path
+# alone isn't enough (it prevents duplicate issues, but the same bug pattern
+# keeps firing). Escalates by labeling the re-fired issue breeze:human so a
+# human looks at it instead of the loop continuing to comment on it.
+# Returns 0 if meta-loop detected, 1 otherwise.
+check_meta_loop() {
+  local issue_number="$1"
+  local threshold=2 window_minutes=60
+
+  # Fetch comments with timestamps; filter to our "again" updates within window.
+  local cutoff_iso
+  cutoff_iso=$(date -u -v-${window_minutes}M +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+    || date -u -d "${window_minutes} minutes ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+    || echo "")
+  [[ -z "$cutoff_iso" ]] && return 1
+
+  local count
+  count=$(gh issue view "$issue_number" --repo "$REPO" --json comments 2>/dev/null \
+    | jq --arg cutoff "$cutoff_iso" \
+        '[.comments[] | select(.body | startswith("**Hot-loop detected again**")) | select(.createdAt > $cutoff)] | length' \
+    2>/dev/null || echo "0")
+
+  [[ "$count" -ge "$threshold" ]]
+}
+
 # File a hot-loop bug issue with details about the stuck agent/PR
 file_hotloop_bug() {
   local agent="$1" number="$2"
@@ -981,6 +1009,20 @@ The quarantine remains in effect."
 
     gh issue comment "$existing_issue" --repo "$REPO" --body "$update_comment" 2>&1 | tee -a "$LOG" || true
     log "updated existing hot-loop issue #$existing_issue with new occurrence"
+
+    # Meta-loop escalation: if the same (agent, PR) hot-loop has re-fired 2+
+    # times within the last hour, the underlying issue isn't self-healing —
+    # escalate to human. The PR already carries breeze:quarantine-hotloop from
+    # the caller, so we only need to flag the re-fired issue here.
+    if check_meta_loop "$existing_issue"; then
+      log "meta-loop: agent=$agent pr=#$number issue=#$existing_issue re-fired 2+ times in 60min → breeze:human"
+      set_breeze_state "$REPO" "$existing_issue" human
+      gh issue comment "$existing_issue" --repo "$REPO" --body "**tick:**
+
+Meta-loop detected: this hot-loop issue has been re-filed 2+ times within the last hour for the same (agent=\`$agent\`, target=PR #$number) pair. Automatic quarantine + dedup is not resolving the underlying cause.
+
+Applied \`breeze:human\` to this issue and \`breeze:quarantine-hotloop\` remains on PR #$number. Both are paused pending human investigation — the loop will stop cascading." 2>&1 | tee -a "$LOG" || true
+    fi
   else
     # Create new hot-loop bug issue
     local issue_body="**Hot-loop detected**
