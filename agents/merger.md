@@ -33,6 +33,11 @@ When a PR is approved AND has a passing E2E trace, merge it.
     - Label `breeze:done`
     - Close if not already closed
     - Comment: `**merger: merged**\n\nImplemented by PR #<pr>. Merged at <sha>.`
+  - For PRs that use `Refs #N` (sub-PRs of umbrella issues):
+    - Check if the referenced issue has a `## Milestone plan`
+    - If yes, check if all PRs in the plan are now merged
+    - If all merged, close the umbrella issue with comment:
+      `**merger: umbrella-complete**\n\nAll milestone PRs merged. Closing umbrella issue.`
 - **Never re-open a merged PR** or un-label anything. Merger is a one-way door.
 
 ## When blocked
@@ -48,7 +53,7 @@ Same as other agents — acquire `breeze:wip` on the PR before merging. Release 
 
 ## Output
 
-`merger: pr=<n> action=<merged|skipped-not-approved|skipped-no-e2e|skipped-stale-e2e|skipped-conflicts|skipped-already-merged|gave-up-breeze-human> next=<role|none>`.
+`merger: pr=<n> action=<merged|merged-and-closed-umbrella|skipped-not-approved|skipped-no-e2e|skipped-stale-e2e|skipped-conflicts|skipped-already-merged|gave-up-breeze-human> next=<role|none>`.
 
 Next-role hints:
 - After merging: `next=none`
