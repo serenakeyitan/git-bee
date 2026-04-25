@@ -753,26 +753,30 @@ pick_target() {
           return
         fi
 
-        # Check for E2E test plan
-        if ! echo "$issue_body" | grep -q "^## E2E test plan"; then
+        # Check for E2E test plan in body OR in a test-agent comment.
+        # test-agent posts its plan as a **test-agent:** prefixed comment by
+        # default (it doesn't edit the issue body). Treat both as "plan exists."
+        # Old code only checked the body, so test-agent was dispatched on every
+        # tick forever even after writing the plan — quarantined #798/#820/#832
+        # three nights running.
+        local has_test_plan=false
+        if echo "$issue_body" | grep -q "^## E2E test plan"; then
+          has_test_plan=true
+        elif gh issue view "$n" --repo "$REPO" --json comments \
+              --jq '[.comments[] | select(.body | startswith("**test-agent:**"))] | length > 0' \
+              2>/dev/null | grep -q true; then
+          has_test_plan=true
+        fi
+        if [[ "$has_test_plan" != "true" ]]; then
           echo "test-agent $n"
           return
         fi
 
-        # Check if plan confirmation gate is checked
-        if echo "$issue_body" | grep -q "^- \[x\] \*\*plan confirmed"; then
-          # If every PR number enumerated in the milestone plan is merged,
-          # the issue will be closed by merger. Otherwise continue with drafter.
-          # The auditor role is removed in v0.2.0. Merger now handles umbrella closing.
-          # Skip the check for all PRs being merged - continue to drafter.
-          # Plan is confirmed, proceed to drafter
-          echo "drafter $n"
-          return
-        else
-          # Has test plan but needs review
-          echo "test-agent $n"
-          return
-        fi
+        # Plan exists. Drafter takes it from here. Plan-confirmation
+        # checkbox is human-only; do NOT re-dispatch test-agent to "review"
+        # the plan — that was the second half of the loop bug from #832.
+        echo "drafter $n"
+        return
       fi
     fi
     # Guard: check if this issue already has an open PR linked to it.
