@@ -212,16 +212,13 @@ The tick loop is now paused and will not dispatch agents until the ROLLBACK mark
 EOF
 )
 
-      # Create the issue and apply breeze:human via the labeling helper.
+      # Use file_or_update_issue to prevent duplicates.
       # We don't set priority:high — per AGENTS.md no auto-priority labels.
-      new_issue_url=""
-      new_issue_url=$(gh issue create --repo "$REPO" \
-        --title "Automatic rollback: 3 consecutive tick crashes detected" \
-        --body "$issue_body" 2>&1 | tee -a "$LOG" | tail -1 || true)
       new_issue_n=""
-      new_issue_n=$(echo "$new_issue_url" | grep -oE '/issues/[0-9]+' | grep -oE '[0-9]+' || echo "")
+      new_issue_n=$(file_or_update_issue "$REPO" "Automatic rollback: 3 consecutive tick crashes detected" "$issue_body" "")
       if [[ -n "$new_issue_n" ]]; then
         set_breeze_state "$REPO" "$new_issue_n" human
+        log "filed or updated rollback issue #$new_issue_n"
       fi
     else
       log "ERROR: Could not find a known-good SHA in tick history — filing alert issue"
@@ -253,15 +250,12 @@ The tick loop is now paused and will not dispatch agents until the ROLLBACK mark
 EOF
 )
 
-      # Create the issue and apply breeze:human via the labeling helper.
-      new_issue_url=""
-      new_issue_url=$(gh issue create --repo "$REPO" \
-        --title "Tick crashing with no rollback target available" \
-        --body "$issue_body" 2>&1 | tee -a "$LOG" | tail -1 || true)
+      # Use file_or_update_issue to prevent duplicates.
       new_issue_n=""
-      new_issue_n=$(echo "$new_issue_url" | grep -oE '/issues/[0-9]+' | grep -oE '[0-9]+' || echo "")
+      new_issue_n=$(file_or_update_issue "$REPO" "Tick crashing with no rollback target available" "$issue_body" "")
       if [[ -n "$new_issue_n" ]]; then
         set_breeze_state "$REPO" "$new_issue_n" human
+        log "filed or updated no-rollback-target issue #$new_issue_n"
       fi
     fi
   fi
@@ -1029,18 +1023,13 @@ $log_excerpt
 
 The quarantine will auto-release when PR #$number gets new commits (HEAD SHA changes)."
 
-    # Create the issue and apply priority:high + breeze:human
-    local new_issue_url
-    new_issue_url=$(gh issue create --repo "$REPO" \
-      --title "hot-loop: $agent stuck on PR #$number" \
-      --body "$issue_body" \
-      --label "priority:high" 2>&1 | tee -a "$LOG" | tail -1 || true)
-
+    # Use file_or_update_issue to prevent duplicates.
+    # Apply priority:high + breeze:human to the issue.
     local new_issue_n
-    new_issue_n=$(echo "$new_issue_url" | grep -oE '/issues/[0-9]+' | grep -oE '[0-9]+' || echo "")
+    new_issue_n=$(file_or_update_issue "$REPO" "hot-loop: $agent stuck on PR #$number" "$issue_body" "--label priority:high")
     if [[ -n "$new_issue_n" ]]; then
       set_breeze_state "$REPO" "$new_issue_n" human
-      log "filed hot-loop bug issue #$new_issue_n"
+      log "filed or updated hot-loop bug issue #$new_issue_n"
     fi
   fi
 }
