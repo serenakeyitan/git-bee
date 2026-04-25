@@ -24,6 +24,10 @@ source "$HERE/labels.sh"
 # Prevents cascade patterns like #786 -> #788 -> #792 where the same divergence
 # bug got filed once per attempt at fixing it. Originally added in #799, lost
 # in a subsequent merge/rebase, caused tonight's exit-127 rollback cascade.
+#
+# Also detects meta-loops: if the SAME issue title is created/updated 2+ times
+# within 1 hour, applies breeze:quarantine-hotloop to any PR mentioned in the
+# title and breeze:human to the issue.
 file_or_update_issue() {
   local repo="$1" title="$2" body="$3" extra_args="${4:-}"
   local existing
@@ -31,6 +35,27 @@ file_or_update_issue() {
   if [[ -n "$existing" ]]; then
     log "file_or_update_issue: #$existing already open with title '''$title''' — appending comment"
     gh issue comment "$existing" --repo "$repo" --body "$body" >/dev/null 2>&1 || true
+
+    # Meta-loop detection: check if this issue has been updated 2+ times in last hour
+    if check_generic_meta_loop "$existing"; then
+      log "META-LOOP: issue #$existing (title: '$title') updated 2+ times in 60min → applying breeze:human"
+      set_breeze_state "$repo" "$existing" human
+
+      # Extract PR number from title if present (e.g., "hot-loop: agent stuck on PR #123")
+      local pr_num
+      pr_num=$(echo "$title" | grep -oE 'PR #[0-9]+' | grep -oE '[0-9]+' | head -1 || echo "")
+      if [[ -n "$pr_num" ]]; then
+        log "META-LOOP: quarantining PR #$pr_num referenced in title"
+        gh pr edit "$pr_num" --repo "$repo" --add-label "breeze:quarantine-hotloop" 2>/dev/null || true
+      fi
+
+      gh issue comment "$existing" --repo "$repo" --body "**tick:**
+
+Meta-loop detected: this issue has been updated 2+ times within the last hour. The underlying problem is not self-healing through automatic retries.
+
+Applied \`breeze:human\` to this issue. Manual investigation required to break the loop." 2>&1 | tee -a "$LOG" || true
+    fi
+
     echo "$existing"
     return 0
   fi
@@ -941,6 +966,30 @@ check_meta_loop() {
   count=$(gh issue view "$issue_number" --repo "$REPO" --json comments 2>/dev/null \
     | jq --arg cutoff "$cutoff_iso" \
         '[.comments[] | select(.body | startswith("**Hot-loop detected again**")) | select(.createdAt > $cutoff)] | length' \
+    2>/dev/null || echo "0")
+
+  [[ "$count" -ge "$threshold" ]]
+}
+
+# Generic meta-loop detector that works for any issue type.
+# Detects if an issue has been commented on 2+ times within 60 minutes,
+# which indicates the same problem is being filed repeatedly.
+check_generic_meta_loop() {
+  local issue_number="$1"
+  local threshold=2 window_minutes=60
+
+  # Calculate cutoff timestamp
+  local cutoff_iso
+  cutoff_iso=$(date -u -v-${window_minutes}M +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+    || date -u -d "${window_minutes} minutes ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+    || echo "")
+  [[ -z "$cutoff_iso" ]] && return 1
+
+  # Count comments within the window (excluding human comments)
+  local count
+  count=$(gh issue view "$issue_number" --repo "$REPO" --json comments 2>/dev/null \
+    | jq --arg cutoff "$cutoff_iso" \
+        '[.comments[] | select(.createdAt > $cutoff) | select(.body | startswith("**") and (startswith("**human:") | not))] | length' \
     2>/dev/null || echo "0")
 
   [[ "$count" -ge "$threshold" ]]
