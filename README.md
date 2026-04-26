@@ -106,21 +106,18 @@ Four canonical labels plus one quarantine label. See `AGENTS.md` for the full st
 |---|---|---|
 | `breeze:wip` | An agent has claimed this item | `claim_acquire` |
 | `breeze:human` | Agent needs human judgment | Any agent via `bee pause` |
-| `breeze:done` | All work complete | Merger, auditor, janitor |
+| `breeze:done` | All work complete | Merger, janitor |
 | `breeze:quarantine-hotloop` | Hot-loop detected; dispatcher skips | Tick's hot-loop detector |
 
 Stale `breeze:wip` = labeled-event timestamp older than 2 hours. Any agent may take over a stale claim. The `breeze:done` transition happens automatically on merge/close via merger and a periodic janitor sweep.
 
 ## Agent roles
 
-- [`agents/drafter.md`](agents/drafter.md) — Reads a design-doc issue, drafts the design in comments, opens implementation PRs linked with `Fixes #<issue>`. Also addresses reviewer feedback.
-- [`agents/planner.md`](agents/planner.md) — Breaks thin design-doc issues into a milestone plan before drafter implements.
-- [`agents/reviewer.md`](agents/reviewer.md) — Reviews implementation PRs with a three-state verdict: approve / request-changes / escalate.
-- [`agents/e2e.md`](agents/e2e.md) — Runs E2E for a PR in a sandbox repo. Commits each step as its own commit; the Git log is the test trace.
-- [`agents/e2e-designer.md`](agents/e2e-designer.md) — Writes e2e test cases for PRs that lack one.
-- [`agents/e2e-supervisor.md`](agents/e2e-supervisor.md) — Classifies e2e failures (lazy-run, code-bug, test-bug, design-trivial, design-conflicting).
-- [`agents/merger.md`](agents/merger.md) — Squash-merges approved PRs with passing E2E; transitions to `breeze:done`, closes linked issues.
-- [`agents/auditor.md`](agents/auditor.md) — Fresh-context audit of multi-PR design-doc coverage. Closes the umbrella only if all coverage checks pass, else labels `breeze:human`.
+- [`agents/planner.md`](agents/planner.md) — Reads finalized design-doc issues, creates structured milestone plans that break work into appropriately-sized PRs.
+- [`agents/drafter.md`](agents/drafter.md) — Turns design-doc issues into shipped code; pushes fixes addressing review feedback.
+- [`agents/reviewer.md`](agents/reviewer.md) — Independent code review with three-state verdict: approve / request-changes / escalate.
+- [`agents/test-agent.md`](agents/test-agent.md) — Runs E2E verify.sh in sandbox, writes test cases when missing, posts trace, classifies pass/fail.
+- [`agents/merger.md`](agents/merger.md) — Final gate: approved + test passed at HEAD SHA → squash-merge, transition labels, close linked issues (including umbrella issues).
 
 ## Safety mechanisms
 

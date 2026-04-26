@@ -11,7 +11,7 @@ Four canonical labels plus one quarantine label. Mutually exclusive among the ca
 | `breeze:new` | Visual marker only. Absence of all `breeze:*` labels is the real "new" signal. | Human, optionally. Never auto-applied. |
 | `breeze:wip` | An agent is actively working this item. | `claim.sh` on acquire. |
 | `breeze:human` | Needs human judgment. Tick dispatcher skips this. | Any agent via `bee pause`; supervisor on `design-conflicting`; merger when stuck. |
-| `breeze:done` | Agent has finished. GitHub MERGED/CLOSED also implies done. | Merger on merge, auditor on close, janitor on drift cleanup. |
+| `breeze:done` | Agent has finished. GitHub MERGED/CLOSED also implies done. | Merger on merge/close, janitor on drift cleanup. |
 | `breeze:quarantine-hotloop` | A hot-loop was detected on this PR; dispatcher skips. | Tick's hot-loop detector (see `check_hot_loop` in `tick.sh`). |
 
 ### Rules
@@ -20,7 +20,7 @@ Four canonical labels plus one quarantine label. Mutually exclusive among the ca
 - **Exactly one canonical label.** At any moment a non-closed item has zero or one of {`wip`, `human`, `done`}. `quarantine-hotloop` may coexist with another canonical label.
 - **Do NOT label PRs you open.** Drafter leaves opened PRs unlabeled so the dispatcher can route them. `claim_acquire` handles `breeze:wip` on issues only.
 - **No other label namespaces.** Do NOT apply `source:*` or `priority:*` labels on issues or PRs. Source is internal (task kind). Priority is a dispatcher concern — if you need it, sort in `tick.sh`, don't label.
-- **`breeze:done` on merge/close.** Merger sets it after squash-merge; auditor sets it before closing an umbrella issue. The janitor (`janitor_label_cleanup` in `tick.sh`) fixes drift from any agent that forgot.
+- **`breeze:done` on merge/close.** Merger sets it after squash-merge and before closing umbrella issues. The janitor (`janitor_label_cleanup` in `tick.sh`) fixes drift from any agent that forgot.
 
 ## Escape hatches (single-account mode)
 
@@ -42,20 +42,17 @@ bee pause <pr> "<reason>"           # applies breeze:human, posts comment, relea
 
 | Agent | Job |
 | --- | --- |
-| `drafter` | Reads design-doc issues, drafts milestone plans, opens implementation PRs, addresses reviewer feedback. |
-| `planner` | Breaks thin design-doc issues into milestone plans before drafter starts implementing. |
+| `planner` | Reads finalized design-doc issues, creates structured milestone plans that break work into appropriately-sized PRs. |
+| `drafter` | Turns design-doc issues into shipped code; pushes fixes addressing review feedback. |
 | `reviewer` | Reviews implementation PRs. Three-state verdict invariant: approve / request-changes / escalate. |
-| `e2e` | Runs a PR's `tests/e2e/verify.sh` in a sandbox; posts the canonical `**E2E trace (pass\|fail)**` comment. |
-| `e2e-designer` | Writes e2e test cases when a PR lacks one. |
-| `e2e-supervisor` | Classifies e2e failures (lazy-run, code-bug, test-bug, design-trivial, design-conflicting). |
-| `merger` | Squash-merges approved PRs with passing e2e, transitions to `breeze:done`, closes linked issues. |
-| `auditor` | Audits multi-PR design-doc coverage, closes umbrella issues when all PRs are merged. |
+| `test-agent` | Runs a PR's `tests/e2e/verify.sh` in a sandbox; writes test cases when missing; posts the canonical `**E2E trace (pass\|fail)**` comment; classifies failures (lazy-run, code-bug, test-bug, design-trivial, design-conflicting). |
+| `merger` | Squash-merges approved PRs with passing e2e, transitions to `breeze:done`, closes linked issues (including umbrella issues). |
 
 ## Comment prefixes
 
 Every PR/issue comment an agent posts must start with `**<role>:**` on its own first line:
 
-- `**drafter:**`, `**reviewer:**`, `**e2e:**`, `**e2e-designer:**`, `**e2e-supervisor:**`, `**planner:**`, `**auditor:**`, `**merger:**`
+- `**planner:**`, `**drafter:**`, `**reviewer:**`, `**test-agent:**`, `**merger:**`
 - Human comments posted through `bee` use `**human:**`.
 
 The canonical e2e trace comment (`**E2E trace (pass|fail)**`) emitted by `scripts/e2e-sandbox.sh finalize` is exempt — it identifies itself.
