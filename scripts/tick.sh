@@ -25,13 +25,41 @@ source "$HERE/labels.sh"
 # bug got filed once per attempt at fixing it. Originally added in #799, lost
 # in a subsequent merge/rebase, caused tonight's exit-127 rollback cascade.
 file_or_update_issue() {
-  local repo="$1" title="$2" body="$3" extra_args="${4:-}"
+  local repo="$1" title="$2" body="$3" extra_args="${4:-}" agent_role="${5:-}"
   local existing
   existing=$(gh issue list --repo "$repo" --state open --search "in:title \"$title\"" --json number,title --jq ".[] | select(.title == \"$title\") | .number" 2>/dev/null | head -1 || echo "")
   if [[ -n "$existing" ]]; then
     log "file_or_update_issue: #$existing already open with title '''$title''' — appending comment"
     gh issue comment "$existing" --repo "$repo" --body "$body" >/dev/null 2>&1 || true
     echo "$existing"
+
+    # Check for generic meta-loop after appending comment
+    if [[ -n "$agent_role" ]] && check_generic_meta_loop "$agent_role" "$title"; then
+      log "generic meta-loop detected: title='$title' re-filed 2+ times in 60min → breeze:human"
+      set_breeze_state "$repo" "$existing" human
+
+      # Extract PR number from title if present (e.g., "hot-loop: agent stuck on PR #123")
+      local pr_number
+      pr_number=$(echo "$title" | grep -oE 'PR #[0-9]+' | grep -oE '[0-9]+' || echo "")
+
+      if [[ -n "$pr_number" ]]; then
+        log "generic meta-loop: applying breeze:quarantine-hotloop to PR #$pr_number"
+        gh pr edit "$pr_number" --repo "$repo" --add-label breeze:quarantine-hotloop 2>&1 | tee -a "$LOG" || true
+
+        gh issue comment "$existing" --repo "$repo" --body "**tick:**
+
+Meta-loop detected: this issue has been re-filed 2+ times within the last hour with the same title pattern. Automatic dedup is not resolving the underlying cause.
+
+Applied \`breeze:human\` to this issue and \`breeze:quarantine-hotloop\` to PR #$pr_number. Both are paused pending human investigation — the loop will stop cascading." 2>&1 | tee -a "$LOG" || true
+      else
+        gh issue comment "$existing" --repo "$repo" --body "**tick:**
+
+Meta-loop detected: this issue has been re-filed 2+ times within the last hour with the same title pattern. Automatic dedup is not resolving the underlying cause.
+
+Applied \`breeze:human\` to this issue to pause automatic retries pending human investigation." 2>&1 | tee -a "$LOG" || true
+      fi
+    fi
+
     return 0
   fi
   local url num
@@ -215,7 +243,7 @@ EOF
       # Use file_or_update_issue to prevent duplicates.
       # We don't set priority:high — per AGENTS.md no auto-priority labels.
       new_issue_n=""
-      new_issue_n=$(file_or_update_issue "$REPO" "Automatic rollback: 3 consecutive tick crashes detected" "$issue_body" "")
+      new_issue_n=$(file_or_update_issue "$REPO" "Automatic rollback: 3 consecutive tick crashes detected" "$issue_body" "" "tick")
       if [[ -n "$new_issue_n" ]]; then
         set_breeze_state "$REPO" "$new_issue_n" human
         log "filed or updated rollback issue #$new_issue_n"
@@ -252,7 +280,7 @@ EOF
 
       # Use file_or_update_issue to prevent duplicates.
       new_issue_n=""
-      new_issue_n=$(file_or_update_issue "$REPO" "Tick crashing with no rollback target available" "$issue_body" "")
+      new_issue_n=$(file_or_update_issue "$REPO" "Tick crashing with no rollback target available" "$issue_body" "" "tick")
       if [[ -n "$new_issue_n" ]]; then
         set_breeze_state "$REPO" "$new_issue_n" human
         log "filed or updated no-rollback-target issue #$new_issue_n"
@@ -944,6 +972,46 @@ check_meta_loop() {
   [[ "$count" -ge "$threshold" ]]
 }
 
+# Generic meta-loop detector: detects when ANY auto-filed issue with the same
+# title is filed/updated 2+ times within 60 minutes, regardless of agent role.
+# Used to catch cascading failures that keep re-filing the same issue pattern.
+# Returns 0 if meta-loop detected, 1 otherwise.
+# Params: $1 = agent_role, $2 = issue_title
+check_generic_meta_loop() {
+  local agent_role="$1" issue_title="$2"
+  local threshold=2 window_minutes=60
+
+  # Compute cutoff timestamp
+  local cutoff_iso
+  cutoff_iso=$(date -u -v-${window_minutes}M +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+    || date -u -d "${window_minutes} minutes ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+    || echo "")
+  [[ -z "$cutoff_iso" ]] && return 1
+
+  # Find all open issues with this exact title
+  local matching_issues
+  matching_issues=$(gh issue list --repo "$REPO" --state open \
+    --search "in:title \"$issue_title\"" \
+    --json number,title \
+    --jq ".[] | select(.title == \"$issue_title\") | .number" \
+    2>/dev/null || echo "")
+
+  [[ -z "$matching_issues" ]] && return 1
+
+  # Count automated comments (non-**human:) across all matching issues within window
+  local total_count=0
+  while IFS= read -r issue_num; do
+    local count
+    count=$(gh issue view "$issue_num" --repo "$REPO" --json comments 2>/dev/null \
+      | jq --arg cutoff "$cutoff_iso" \
+          '[.comments[] | select(.body | startswith("**human:") | not) | select(.createdAt > $cutoff)] | length' \
+      2>/dev/null || echo "0")
+    total_count=$((total_count + count))
+  done <<< "$matching_issues"
+
+  [[ "$total_count" -ge "$threshold" ]]
+}
+
 # File a hot-loop bug issue with details about the stuck agent/PR
 file_hotloop_bug() {
   local agent="$1" number="$2"
@@ -1030,7 +1098,7 @@ The quarantine will auto-release when PR #$number gets new commits (HEAD SHA cha
     # Use file_or_update_issue to prevent duplicates.
     # Apply priority:high + breeze:human to the issue.
     local new_issue_n
-    new_issue_n=$(file_or_update_issue "$REPO" "hot-loop: $agent stuck on PR #$number" "$issue_body" "--label priority:high")
+    new_issue_n=$(file_or_update_issue "$REPO" "hot-loop: $agent stuck on PR #$number" "$issue_body" "--label priority:high" "tick")
     if [[ -n "$new_issue_n" ]]; then
       set_breeze_state "$REPO" "$new_issue_n" human
       log "filed or updated hot-loop bug issue #$new_issue_n"
@@ -1151,7 +1219,7 @@ if [[ -z "$target" ]]; then
         "\`\`\`" \
         "" \
         "Auto-filed by \`scripts/tick.sh\` debt watchdog. Once a fix lands, the streak file resets on the next successful dispatch.")
-      file_or_update_issue "$REPO" "Watchdog: idle-with-debt (dispatcher blind spot)" "$debt_body" "--label priority:high" >/dev/null
+      file_or_update_issue "$REPO" "Watchdog: idle-with-debt (dispatcher blind spot)" "$debt_body" "--label priority:high" "tick" >/dev/null
       # Reset streak after filing so we don't spam the issue every tick
       echo "0" > "$DEBT_STREAK_FILE"
     fi
