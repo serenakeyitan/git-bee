@@ -1332,7 +1332,37 @@ E2E sandbox run skipped as these changes don't affect runtime behavior. Automati
   fi
 fi
 
-# Check if quarantine should be auto-released (new commits pushed)
+# Get quarantine timestamp from GitHub timeline or fallback to tick.log
+get_quarantine_timestamp() {
+  local number="$1"
+
+  # Try to get from GitHub timeline events (most accurate)
+  local timeline_ts
+  timeline_ts=$(gh api "repos/$REPO/issues/$number/timeline" --jq '
+    [.[] | select(.event == "labeled" and .label.name == "breeze:quarantine-hotloop")]
+    | sort_by(.created_at)
+    | last
+    | .created_at // ""
+  ' 2>/dev/null || echo "")
+
+  if [[ -n "$timeline_ts" ]]; then
+    # Convert ISO to unix timestamp
+    printf '"%s"' "$timeline_ts" | jq -r 'sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601' 2>/dev/null || echo "0"
+    return
+  fi
+
+  # Fallback: grep tick.log for hot-loop detection
+  local quarantine_time
+  quarantine_time=$(grep "hot.*loop.*#$number" "$LOG" 2>/dev/null | tail -1 | awk '{print $1}' || echo "")
+
+  if [[ -n "$quarantine_time" ]]; then
+    printf '"%s"' "$quarantine_time" | jq -r 'sub("Z$"; "+00:00") | fromdateiso8601' 2>/dev/null || echo "0"
+  else
+    echo "0"
+  fi
+}
+
+# Check if quarantine should be auto-released (new commits pushed for PRs, human comment or milestone PR for issues)
 check_quarantine_release() {
   local number="$1"
 
@@ -1345,58 +1375,145 @@ check_quarantine_release() {
     return  # No quarantine to release
   fi
 
-  # Get the HEAD SHA when quarantine was applied from activity log
-  local activity_log="${LOG_DIR}/activity.ndjson"
-  if [[ ! -f "$activity_log" ]]; then
-    return  # Can't determine quarantine SHA
+  # Check release count cap (max 3 auto-releases per issue)
+  local release_dir="${LOG_DIR}/quarantine-releases"
+  mkdir -p "$release_dir"
+  local release_file="${release_dir}/issue-${number}"
+  local release_count=0
+  if [[ -f "$release_file" ]]; then
+    release_count=$(cat "$release_file" 2>/dev/null || echo "0")
   fi
 
-  # Find the last hot-loop event for this target (when quarantine was applied)
-  # We look for a tick log entry about hot-loop detection
-  local quarantine_time
-  quarantine_time=$(grep "hot loop detected.*#$number" "$LOG" 2>/dev/null | tail -1 | awk '{print $1}' || echo "")
-
-  if [[ -z "$quarantine_time" ]]; then
-    return  # Can't find when quarantine was applied
+  if [[ "$release_count" -ge 3 ]]; then
+    log "quarantine on #$number: release count=$release_count (capped at 3) — quarantine sticks"
+    return  # Max releases reached, quarantine sticks
   fi
 
-  # Check if PR exists and get current HEAD SHA
-  local current_sha=""
-  if gh pr view "$number" --repo "$REPO" --json headRefOid >/dev/null 2>&1; then
-    current_sha=$(gh pr view "$number" --repo "$REPO" --json headRefOid --jq '.headRefOid' 2>/dev/null || echo "")
-  fi
-
-  if [[ -z "$current_sha" ]]; then
-    return  # Can't get current SHA
-  fi
-
-  # Get the SHA at time of quarantine by checking git log
-  # This is approximate - we check what HEAD was around that time
+  # Get quarantine timestamp
   local quarantine_ts
-  quarantine_ts=$(printf '"%s"' "$quarantine_time" | jq -r 'sub("Z$"; "+00:00") | fromdateiso8601' 2>/dev/null || echo "0")
+  quarantine_ts=$(get_quarantine_timestamp "$number")
 
-  # Check if any commits were pushed after quarantine time
-  local pr_branch
-  pr_branch=$(gh pr view "$number" --repo "$REPO" --json headRefName --jq '.headRefName' 2>/dev/null || echo "")
+  if [[ "$quarantine_ts" == "0" ]]; then
+    log "quarantine on #$number: cannot determine quarantine timestamp — skipping auto-release"
+    return
+  fi
 
-  if [[ -n "$pr_branch" ]]; then
-    # Fetch the branch to ensure we have latest commits
-    git fetch origin "$pr_branch" --quiet 2>/dev/null || true
+  # Check if this is a PR or issue
+  local is_pr=false
+  if gh pr view "$number" --repo "$REPO" --json number >/dev/null 2>&1; then
+    is_pr=true
+  fi
 
-    # Check if there are commits after quarantine time.
-    # git --since does not accept @{<unix_ts>} (that's reflog syntax); convert
-    # to an ISO date string first. Handle BSD/macOS (-r N) and GNU (-d @N) date.
-    local quarantine_iso
-    quarantine_iso=$(date -u -r "$quarantine_ts" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
-      || date -u -d "@$quarantine_ts" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
-      || echo "")
-    local newer_commits=""
-    if [[ -n "$quarantine_iso" ]]; then
-      newer_commits=$(git log "origin/$pr_branch" --since="$quarantine_iso" --format="%H" 2>/dev/null | head -1 || echo "")
+  if [[ "$is_pr" == "true" ]]; then
+    # PR auto-release: new commits after quarantine
+    local current_sha pr_branch
+    current_sha=$(gh pr view "$number" --repo "$REPO" --json headRefOid --jq '.headRefOid' 2>/dev/null || echo "")
+
+    if [[ -z "$current_sha" ]]; then
+      return  # Can't get current SHA
     fi
 
-    if [[ -n "$newer_commits" ]]; then
-      log "auto-releasing quarantine on #$number (new commits detected)"
+    pr_branch=$(gh pr view "$number" --repo "$REPO" --json headRefName --jq '.headRefName' 2>/dev/null || echo "")
+
+    if [[ -n "$pr_branch" ]]; then
+      # Fetch the branch to ensure we have latest commits
+      git fetch origin "$pr_branch" --quiet 2>/dev/null || true
+
+      # Check if there are commits after quarantine time
+      local quarantine_iso
+      quarantine_iso=$(date -u -r "$quarantine_ts" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+        || date -u -d "@$quarantine_ts" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+        || echo "")
+      local newer_commits=""
+      if [[ -n "$quarantine_iso" ]]; then
+        newer_commits=$(git log "origin/$pr_branch" --since="$quarantine_iso" --format="%H" 2>/dev/null | head -1 || echo "")
+      fi
+
+      if [[ -n "$newer_commits" ]]; then
+        # Increment release count
+        release_count=$((release_count + 1))
+        echo "$release_count" > "$release_file"
+
+        log "auto-releasing quarantine on PR #$number (new commits detected, release $release_count/3)"
+
+        # Remove quarantine label
+        gh issue edit "$number" --repo "$REPO" --remove-label "breeze:quarantine-hotloop" 2>&1 | tee -a "$LOG" || true
+
+        # Post comment about auto-release
+        local release_comment="**tick:**
+
+Quarantine auto-released: New commits detected on PR #$number since quarantine was applied.
+
+Auto-release $release_count/3. The \`breeze:quarantine-hotloop\` label has been removed and normal dispatch can resume."
+
+        gh issue comment "$number" --repo "$REPO" --body "$release_comment" 2>&1 | tee -a "$LOG" || true
+      fi
+    fi
+  else
+    # Issue auto-release: human comment OR milestone PR merge after quarantine
+    local should_release=false
+    local release_reason=""
+
+    # Check for human comment after quarantine timestamp
+    local issue_json
+    issue_json=$(gh issue view "$number" --repo "$REPO" --json comments,body 2>/dev/null || echo "{}")
+
+    local human_comment_after_quarantine
+    human_comment_after_quarantine=$(echo "$issue_json" | jq --arg ts "$quarantine_ts" '
+      [.comments[]? |
+       select(.body | startswith("**human:**")) |
+       select((.createdAt | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) > ($ts | tonumber))]
+      | length > 0
+    ' 2>/dev/null || echo "false")
+
+    if [[ "$human_comment_after_quarantine" == "true" ]]; then
+      should_release=true
+      release_reason="human comment posted after quarantine"
+    fi
+
+    # Check for milestone PR merge after quarantine timestamp
+    if [[ "$should_release" == "false" ]]; then
+      local issue_body
+      issue_body=$(echo "$issue_json" | jq -r '.body // ""')
+
+      # Extract milestone PRs from body using awk to find ## Milestone plan section
+      local milestone_prs
+      milestone_prs=$(echo "$issue_body" | awk '
+        /^## Milestone plan/ { in_milestone=1; next }
+        /^## / && in_milestone { exit }
+        in_milestone && /PR #[0-9]+/ {
+          while (match($0, /PR #[0-9]+/)) {
+            print substr($0, RSTART+4, RLENGTH-4)
+            $0 = substr($0, RSTART+RLENGTH)
+          }
+        }
+      ' | sort -u)
+
+      # Check if any milestone PR merged after quarantine
+      for pr_num in $milestone_prs; do
+        [[ -z "$pr_num" ]] && continue
+
+        local pr_merged_at pr_merged_ts
+        pr_merged_at=$(gh pr view "$pr_num" --repo "$REPO" --json mergedAt --jq '.mergedAt // ""' 2>/dev/null || echo "")
+
+        if [[ -n "$pr_merged_at" ]]; then
+          pr_merged_ts=$(printf '"%s"' "$pr_merged_at" | jq -r 'sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601' 2>/dev/null || echo "0")
+
+          if [[ "$pr_merged_ts" -gt "$quarantine_ts" ]]; then
+            should_release=true
+            release_reason="milestone PR #$pr_num merged after quarantine"
+            break
+          fi
+        fi
+      done
+    fi
+
+    if [[ "$should_release" == "true" ]]; then
+      # Increment release count
+      release_count=$((release_count + 1))
+      echo "$release_count" > "$release_file"
+
+      log "auto-releasing quarantine on issue #$number ($release_reason, release $release_count/3)"
 
       # Remove quarantine label
       gh issue edit "$number" --repo "$REPO" --remove-label "breeze:quarantine-hotloop" 2>&1 | tee -a "$LOG" || true
@@ -1404,9 +1521,9 @@ check_quarantine_release() {
       # Post comment about auto-release
       local release_comment="**tick:**
 
-Quarantine auto-released: New commits detected on PR #$number since quarantine was applied.
+Quarantine auto-released: $release_reason.
 
-The \`breeze:quarantine-hotloop\` label has been removed and normal dispatch can resume."
+Auto-release $release_count/3. The \`breeze:quarantine-hotloop\` label has been removed and normal dispatch can resume."
 
       gh issue comment "$number" --repo "$REPO" --body "$release_comment" 2>&1 | tee -a "$LOG" || true
     fi
