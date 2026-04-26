@@ -116,57 +116,45 @@ fi
 
 cleanup "$issue_b"
 
-# Test (c): Same pair fires after 1h gap → no quarantine
+# Test (c): Different role fires same title → no quarantine
 echo ""
-echo "Test (c): Filing after 1h window should not trigger quarantine"
-echo "--------------------------------------------------------------"
-
-# Note: We can't actually wait 1h in an E2E test, so we'll simulate this by
-# checking that the detector correctly uses the time window. This is more of
-# a unit test, but we can verify the logic is sound.
-
-echo "  ✓ Time window logic verified in check_generic_meta_loop() implementation"
-echo "    (60-minute cutoff ensures old filings don't count toward threshold)"
-
-# Test (d): Different role fires same title → no quarantine
-echo ""
-echo "Test (d): Different agent role should not trigger quarantine"
+echo "Test (c): Different agent role should not trigger quarantine"
 echo "------------------------------------------------------------"
 
-TEST_TITLE_D="[E2E Test] Generic meta-loop test D $(date +%s)"
-TEST_BODY_D1="**tick:**
+TEST_TITLE_C="[E2E Test] Generic meta-loop test C $(date +%s)"
+TEST_BODY_C1="**tick:**
 
 First filing by tick role."
 
-TEST_BODY_D2="**supervisor:**
+TEST_BODY_C2="**supervisor:**
 
 Second filing but by different role (supervisor)."
 
-issue_d1=$(file_or_update_issue "$REPO" "$TEST_TITLE_D" "$TEST_BODY_D1" "" "tick")
-echo "  Filed by tick role as issue #$issue_d1"
+issue_c1=$(file_or_update_issue "$REPO" "$TEST_TITLE_C" "$TEST_BODY_C1" "" "tick")
+echo "  Filed by tick role as issue #$issue_c1"
 
 sleep 2
 
-issue_d2=$(file_or_update_issue "$REPO" "$TEST_TITLE_D" "$TEST_BODY_D2" "" "supervisor")
-echo "  Filed by supervisor role (returned issue #$issue_d2)"
+issue_c2=$(file_or_update_issue "$REPO" "$TEST_TITLE_C" "$TEST_BODY_C2" "" "supervisor")
+echo "  Filed by supervisor role (returned issue #$issue_c2)"
 
 sleep 2
 
 # Check that no quarantine was applied (different roles)
-labels=$(gh issue view "$issue_d1" --repo "$REPO" --json labels --jq '[.labels[].name] | join(",")')
+labels=$(gh issue view "$issue_c1" --repo "$REPO" --json labels --jq '[.labels[].name] | join(",")')
 if echo "$labels" | grep -q "breeze:human"; then
   echo "  ✗ Issue incorrectly quarantined despite different agent roles"
-  cleanup "$issue_d1"
+  cleanup "$issue_c1"
   exit 1
 else
   echo "  ✓ Issue not quarantined when different roles file same title"
 fi
 
-cleanup "$issue_d1"
+cleanup "$issue_c1"
 
-# Test (e): Cold-start detection
+# Test (d): Cold-start detection
 echo ""
-echo "Test (e): Fresh clone can detect meta-loops"
+echo "Test (d): Fresh clone can detect meta-loops"
 echo "-------------------------------------------"
 
 # The check_generic_meta_loop function queries GitHub API directly, so it
@@ -191,5 +179,5 @@ echo "  ✓ Cold-start ready: all required functions available"
 
 echo ""
 echo "=== All tests passed ==="
-echo '{"passed": 5, "total": 5}'
+echo '{"passed": 4, "total": 4}'
 exit 0

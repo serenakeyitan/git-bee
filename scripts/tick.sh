@@ -955,7 +955,7 @@ check_generic_meta_loop() {
     local count
     count=$(gh issue view "$iss" --repo "$repo" --json comments,body,createdAt 2>/dev/null \
       | jq --arg cutoff "$cutoff_iso" --arg role "$agent_role" \
-          '(if .createdAt > $cutoff then 1 else 0 end) +
+          '(if (.createdAt > $cutoff and (.body | startswith("**\($role):**"))) then 1 else 0 end) +
            ([.comments[] | select(.createdAt > $cutoff and (.body | startswith("**\($role):**")))] | length)' \
       2>/dev/null || echo "0")
     total_count=$((total_count + count))
