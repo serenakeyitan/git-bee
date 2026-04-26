@@ -612,11 +612,15 @@ pr_pipeline_position() {
   fi
 
   # Not approved. Figure out whether reviewer has already looked at HEAD.
-  local changes_requested_at_head reviews_at_head
+  # In single-account mode, reviewer can't use --request-changes formally,
+  # so it posts the verdict in a COMMENTED review body. Recognize both.
+  # Mirror of the approval-body recognition added in #828.
+  local changes_requested_at_head reviews_at_head changes_requested_in_body
   changes_requested_at_head=$(echo "$pr_json" | jq -r --arg sha "$pr_sha"     '[.reviews[]? | select(.commit.oid == $sha and .state == "CHANGES_REQUESTED")] | length > 0' 2>/dev/null || echo "false")
   reviews_at_head=$(echo "$pr_json" | jq -r --arg sha "$pr_sha"     '[.reviews[]? | select(.commit.oid == $sha)] | length' 2>/dev/null || echo "0")
+  changes_requested_in_body=$(echo "$pr_json" | jq -r --arg sha "$pr_sha"     '[.reviews[]? | select(.commit.oid == $sha) | select(.body | test("\\*\\*reviewer verdict: changes-requested\\*\\*"))] | length > 0' 2>/dev/null || echo "false")
 
-  if [[ "$changes_requested_at_head" == "true" ]]; then
+  if [[ "$changes_requested_at_head" == "true" || "$changes_requested_in_body" == "true" ]]; then
     echo "needs-drafter-review"
     return
   fi
