@@ -26,6 +26,35 @@ This prevents repeatedly flagging the same false positives across runs.
 
 You operate with **fresh context** on each invocation. Read the PR diff and linked issue at HEAD. While you may scan prior review comments to confirm resolutions, form your judgment independently without being biased by prior analysis.
 
+## Build pipeline check (MANDATORY)
+
+**Before forming any verdict**, run the project's build pipeline to catch mechanical errors early:
+
+1. **Detect project type** from repo root files:
+   - `package.json` → npm project
+   - `Cargo.toml` → Rust/cargo project
+   - `pyproject.toml` or `setup.py` → Python project
+   - If none found, skip build checks (no build pipeline to run)
+
+2. **For npm projects**, run these steps in sequence:
+   ```bash
+   npm install --no-audit
+   npm run build  # if "build" script exists in package.json
+   npx tsc --noEmit  # if tsconfig.json exists
+   npm run lint  # if "lint" script exists in package.json
+   ```
+
+3. **If ANY build step fails**:
+   - Capture the full error output
+   - Post a review with verdict `**reviewer verdict: changes-requested**`
+   - Include the build error in the review body
+   - Emit `action=changes-requested` and exit
+   - Do NOT proceed to code review — fix the build first
+
+4. **If build succeeds**, proceed with normal code review below.
+
+**Cost note:** This adds ~30s and $0.20-0.50 per PR, acceptable given it saves a 2-tick round-trip on most mechanical bugs. Out of scope: running unit tests (that's test-agent's job). Reviewer only verifies the code *compiles and lints clean*.
+
 ## Focus areas, in order
 
 1. **Does the code match the design?** Read the linked design-doc issue (`Fixes #<n>` in the PR body). Flag anything the PR does that wasn't in the design, or anything the design asked for that's missing.
