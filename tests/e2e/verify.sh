@@ -110,6 +110,23 @@ test_structured_assertions() {
   return 0
 }
 
+# Test (g): Generic meta-loop detector
+test_generic_meta_loop() {
+  echo ""
+  echo "Test (g): Generic meta-loop detector"
+  echo "------------------------------------"
+
+  # Run the dedicated test script
+  if bash "$(dirname "$0")/test-generic-meta-loop.sh" >/dev/null 2>&1; then
+    echo "✅ Test (g) passed: Generic meta-loop detector works correctly"
+  else
+    echo "❌ Test (g) failed: Generic meta-loop detector error"
+    return 1
+  fi
+
+  return 0
+}
+
 # Run all tests
 test_ndjson_capture
 test_atomic_write
@@ -117,6 +134,7 @@ test_missing_verify
 test_result_json
 test_metrics_capture
 test_structured_assertions
+test_generic_meta_loop
 
 echo ""
 echo "================================="
