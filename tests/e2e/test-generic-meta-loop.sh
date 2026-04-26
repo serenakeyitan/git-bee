@@ -18,7 +18,7 @@ REPO="serenakeyitan/git-bee"
 # shellcheck disable=SC1091
 source "$REPO_ROOT/scripts/labels.sh"
 # shellcheck disable=SC1091
-source "$REPO_ROOT/scripts/tick.sh" 2>/dev/null || true
+source "$HERE/tick-test-helper.sh"
 
 echo "=== Testing generic meta-loop detector ==="
 
@@ -116,45 +116,96 @@ fi
 
 cleanup "$issue_b"
 
-# Test (c): Different role fires same title → no quarantine
+# Test (c): Same pair fires after 1h gap → no quarantine (window expired)
 echo ""
-echo "Test (c): Different agent role should not trigger quarantine"
-echo "------------------------------------------------------------"
+echo "Test (c): Same pair after 1h gap should not trigger quarantine"
+echo "---------------------------------------------------------------"
 
 TEST_TITLE_C="[E2E Test] Generic meta-loop test C $(date +%s)"
 TEST_BODY_C1="**tick:**
 
-First filing by tick role."
+First occurrence for time-window test."
 
-TEST_BODY_C2="**supervisor:**
+TEST_BODY_C2="**tick:**
 
-Second filing but by different role (supervisor)."
+Second occurrence, but cutoff set to far future."
 
-issue_c1=$(file_or_update_issue "$REPO" "$TEST_TITLE_C" "$TEST_BODY_C1" "" "tick")
-echo "  Filed by tick role as issue #$issue_c1"
+# File first occurrence
+issue_c=$(file_or_update_issue "$REPO" "$TEST_TITLE_C" "$TEST_BODY_C1" "" "tick")
+echo "  Filed first occurrence as issue #$issue_c"
 
 sleep 2
 
-issue_c2=$(file_or_update_issue "$REPO" "$TEST_TITLE_C" "$TEST_BODY_C2" "" "supervisor")
-echo "  Filed by supervisor role (returned issue #$issue_c2)"
+# Get issue creation time and compute a cutoff that's in the far future (2h from now)
+# This simulates the scenario where the first filing was >1h ago
+future_cutoff=$(date -u -v+2H +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+  || date -u -d "2 hours" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)
+
+# Manually call check_generic_meta_loop with far-future cutoff
+# This makes the first filing appear to be outside the 60-minute window
+# Expected: should NOT trigger quarantine (count=1, threshold=2)
+set +e
+check_generic_meta_loop "$REPO" "tick" "$TEST_TITLE_C" "$issue_c" "$future_cutoff"
+meta_loop_result=$?
+set -e
+
+if [[ "$meta_loop_result" -eq 0 ]]; then
+  echo "  ✗ Meta-loop incorrectly triggered despite window expiration"
+  cleanup "$issue_c"
+  exit 1
+fi
+
+# Verify no quarantine label was applied
+labels=$(gh issue view "$issue_c" --repo "$REPO" --json labels --jq '[.labels[].name] | join(",")')
+if echo "$labels" | grep -q "breeze:human"; then
+  echo "  ✗ Issue incorrectly quarantined after window expiration"
+  cleanup "$issue_c"
+  exit 1
+else
+  echo "  ✓ Issue not quarantined when window expired (first filing outside 60min)"
+fi
+
+cleanup "$issue_c"
+
+# Test (d): Different role fires same title → no quarantine
+echo ""
+echo "Test (d): Different agent role should not trigger quarantine"
+echo "------------------------------------------------------------"
+
+TEST_TITLE_D="[E2E Test] Generic meta-loop test D $(date +%s)"
+TEST_BODY_D1="**tick:**
+
+First filing by tick role."
+
+TEST_BODY_D2="**supervisor:**
+
+Second filing but by different role (supervisor)."
+
+issue_d1=$(file_or_update_issue "$REPO" "$TEST_TITLE_D" "$TEST_BODY_D1" "" "tick")
+echo "  Filed by tick role as issue #$issue_d1"
+
+sleep 2
+
+issue_d2=$(file_or_update_issue "$REPO" "$TEST_TITLE_D" "$TEST_BODY_D2" "" "supervisor")
+echo "  Filed by supervisor role (returned issue #$issue_d2)"
 
 sleep 2
 
 # Check that no quarantine was applied (different roles)
-labels=$(gh issue view "$issue_c1" --repo "$REPO" --json labels --jq '[.labels[].name] | join(",")')
+labels=$(gh issue view "$issue_d1" --repo "$REPO" --json labels --jq '[.labels[].name] | join(",")')
 if echo "$labels" | grep -q "breeze:human"; then
   echo "  ✗ Issue incorrectly quarantined despite different agent roles"
-  cleanup "$issue_c1"
+  cleanup "$issue_d1"
   exit 1
 else
   echo "  ✓ Issue not quarantined when different roles file same title"
 fi
 
-cleanup "$issue_c1"
+cleanup "$issue_d1"
 
-# Test (d): Cold-start detection
+# Test (e): Cold-start detection
 echo ""
-echo "Test (d): Fresh clone can detect meta-loops"
+echo "Test (e): Fresh clone can detect meta-loops"
 echo "-------------------------------------------"
 
 # The check_generic_meta_loop function queries GitHub API directly, so it
@@ -179,5 +230,5 @@ echo "  ✓ Cold-start ready: all required functions available"
 
 echo ""
 echo "=== All tests passed ==="
-echo '{"passed": 4, "total": 4}'
+echo '{"passed": 5, "total": 5}'
 exit 0

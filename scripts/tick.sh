@@ -926,6 +926,7 @@ check_next_hint() {
 # Detects when the SAME issue title is created/updated 2+ times within 1 hour by
 # the SAME agent role, indicating a cascading failure that won't self-heal.
 # Args: $1=repo, $2=agent_role, $3=issue_title, $4=new_issue_number (if just created)
+#       $5=cutoff_iso (optional, for testing; if provided, overrides window calculation)
 # When detected:
 # - Applies breeze:human to the issue
 # - If issue title mentions "PR #N", applies breeze:quarantine-hotloop to that PR
@@ -933,6 +934,7 @@ check_next_hint() {
 # Returns 0 if meta-loop detected, 1 otherwise.
 check_generic_meta_loop() {
   local repo="$1" agent_role="$2" issue_title="$3" issue_number="$4"
+  local cutoff_override="${5:-}"
   local threshold=2 window_minutes=60
 
   # Fetch ALL open issues with this exact title
@@ -945,9 +947,13 @@ check_generic_meta_loop() {
 
   # For each issue, count non-human comments within the window
   local cutoff_iso
-  cutoff_iso=$(date -u -v-${window_minutes}M +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
-    || date -u -d "${window_minutes} minutes ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
-    || echo "")
+  if [[ -n "$cutoff_override" ]]; then
+    cutoff_iso="$cutoff_override"
+  else
+    cutoff_iso=$(date -u -v-${window_minutes}M +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+      || date -u -d "${window_minutes} minutes ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+      || echo "")
+  fi
   [[ -z "$cutoff_iso" ]] && return 1
 
   local total_count=0
