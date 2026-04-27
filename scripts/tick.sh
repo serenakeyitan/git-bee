@@ -27,7 +27,11 @@ source "$HERE/labels.sh"
 file_or_update_issue() {
   local repo="$1" title="$2" body="$3" extra_args="${4:-}" agent_role="${5:-tick}"
   local existing
-  existing=$(gh issue list --repo "$repo" --state open --search "in:title \"$title\"" --json number,title --jq ".[] | select(.title == \"$title\") | .number" 2>/dev/null | head -1 || echo "")
+  # Drop --search: it overrides --state open and returns closed issues, ranked
+  # by recency. That caused 12 watchdog dups today (#870-#881) when the
+  # ranking buried the actually-open match below recently-closed ones.
+  # Just list all open issues and jq-filter exactly. A bit slower but correct.
+  existing=$(gh issue list --repo "$repo" --state open --limit 200 --json number,title --jq ".[] | select(.title == \"$title\") | .number" 2>/dev/null | head -1 || echo "")
   if [[ -n "$existing" ]]; then
     log "file_or_update_issue: #$existing already open with title '''$title''' — appending comment"
     gh issue comment "$existing" --repo "$repo" --body "$body" >/dev/null 2>&1 || true
