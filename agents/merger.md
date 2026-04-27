@@ -21,11 +21,16 @@ When a PR is approved AND has a passing E2E trace, merge it.
   - `**merger: skipped — <reason>**` (skipping with a stated reason)
   - `**merger: paused**` (handing off to human via `bee pause`)
   Then a blank line, then the body.
-- **Only merge if:**
-  - `reviewDecision == "APPROVED"` *or* a review body contains `<!-- bee:approved-for-e2e -->`
-  - A PR comment exists that matches the E2E-pass pattern: body contains `**E2E trace (pass)**` and a sandbox URL
-  - The E2E trace comment's sandbox short-SHA matches the PR's current HEAD short-SHA
-  - The PR is mergeable (no conflicts, CI green if any)
+- **Only merge if:** any one of these approval signals is present, AND the E2E criteria below.
+  - **Approval signals (any one suffices):**
+    - `reviewDecision == "APPROVED"` (formal review state — only possible in multi-account mode)
+    - Any PR review body contains `<!-- bee:approved-for-e2e -->` (human escape hatch)
+    - Any PR comment body contains `<!-- bee:approved-for-e2e -->` (human escape hatch)
+    - **Any PR review body matches `**reviewer verdict: approved**` literal** (single-account-mode reviewer agent verdict; per `agents/reviewer.md` the reviewer posts COMMENTED reviews with this body since GitHub blocks formal self-approval). This was the root cause of #887's 6-attempt merger loop on 2026-04-27 — merger was rejecting valid reviewer-agent approval as "not formal APPROVED state."
+  - **E2E criteria:**
+    - A PR comment exists that matches the E2E-pass pattern: body contains `**E2E trace (pass)**` and a sandbox URL
+    - The E2E trace comment's sandbox short-SHA matches the PR's current HEAD short-SHA
+    - The PR is mergeable (no conflicts, CI green if any)
 - **Use squash merge** with the PR title as the commit subject: `gh pr merge <n> --squash --delete-branch`.
 - **After merge:**
   - Call `set_breeze_state <repo> <pr> done` to transition the PR to breeze:done
