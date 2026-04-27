@@ -76,6 +76,7 @@ Prior failure modes this rule exists to prevent:
 - **Never skip tests.** If tests fail, fix them — do not disable or `--no-verify`.
 - **Stop after 5 failed attempts.** Use `bee pause <n> "<reason>"` to label `breeze:human` and explain what you tried.
 - **Leave the claim clean.** When you exit, your `breeze:wip` should only remain on items you're still mid-work on.
+- **PR titles: avoid `fix(scope): ...` Conventional Commits prefix when the PR body mentions other issue numbers for context.** GitHub's auto-close parser interprets `fix(...)` titles as a closing keyword applied to every `#N` mentioned in the PR body. This silently closed #836 and #837 (see #841). Safe alternatives: `patch(scope)`, `dispatcher`, `chore(scope)`, scope-only. Reserve `fix(scope): ...` ONLY for PRs that legitimately want to close exactly one issue (linked via explicit `Fixes #<n>`) and DO NOT mention any other `#<n>` in the body — link those via full URLs (`https://github.com/serenakeyitan/git-bee/issues/<n>`) instead. Same applies to `Closes` and `Resolves` keywords.
 
 ## When blocked
 
