@@ -320,6 +320,14 @@ if [[ -x "$HERE/notification-scanner.sh" ]]; then
   "$HERE/notification-scanner.sh" 2>&1 | tee -a "$LOG" || log "notification scanner failed (rc=$?)"
 fi
 
+# Run quarantine janitor to auto-release stale quarantines (M2/PR 5).
+# Scans all quarantined items and releases those that meet auto-release
+# criteria (new commits, fix PR merged, or human comment).
+if [[ -x "$HERE/quarantine-janitor.sh" ]]; then
+  log "running quarantine janitor"
+  "$HERE/quarantine-janitor.sh" "$REPO" 2 2>&1 | tee -a "$LOG" || log "quarantine janitor failed (rc=$?)"
+fi
+
 # Check if a PR qualifies for tiny-fix fast path
 # Returns 0 if PR qualifies, 1 otherwise
 check_tiny_fix() {
