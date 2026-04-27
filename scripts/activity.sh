@@ -20,13 +20,15 @@
 #     "umbrella": "#7",            // inferred from Refs/Fixes in PR body; null otherwise
 #     "exit_code": 0,              // end events only
 #     "duration_s": 108,           // end events only
-#     "outcome": "requested-changes", // end events only; parsed from last agent comment
-#     "next": "drafter"            // end events only; next-role hint from agent output
+#     "outcome": "progressed",     // end events only; closed enum (see validate_outcome)
+#     "next": "drafter",           // end events only; next-role hint from agent output
+#     "head_sha": "abc123...",     // end events only; PR head SHA at end time (null for issues)
+#     "last_comment_ts": "2026-...", // end events only; timestamp of latest comment (null if none)
 #   }
 #
-# Outcome is extracted from the last comment authored on the target whose body
-# starts with `**<agent>:` — e.g. "**reviewer: requested-changes**" yields
-# outcome="requested-changes". Best-effort — outcome is null if no such comment.
+# Outcome is a closed enum validated by validate_outcome(). Agents emit outcome
+# tokens in their final comment (e.g., "**drafter: progressed**"). If empty/invalid
+# or exit_code != 0, activity.sh maps to a fallback outcome and warns in tick.log.
 
 set -uo pipefail
 
@@ -35,6 +37,46 @@ ACTIVITY_LOG="${LOG_DIR}/activity.ndjson"
 mkdir -p "$LOG_DIR"
 
 now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+
+# Closed outcome enum. See issue #891.
+# Returns the validated outcome (maps invalid/empty to fallback), and emits
+# a WARN to tick.log if the agent-provided outcome was invalid/missing.
+validate_outcome() {
+  local raw_outcome="$1" exit_code="$2" agent="$3" target="$4"
+  local tick_log="${LOG_DIR}/tick.log"
+
+  # Explicit error mapping: exit_code != 0 → error
+  if [[ "$exit_code" != "0" ]]; then
+    echo "error"
+    return 0
+  fi
+
+  # Valid enum values
+  local valid_outcomes=(
+    "progressed"
+    "no-op-already-done"
+    "no-op-waiting"
+    "no-op-stale-input"
+    "escalated"
+    "error"
+    "no-op-unclassified"
+  )
+
+  # Check if raw_outcome is in the valid set
+  for valid in "${valid_outcomes[@]}"; do
+    if [[ "$raw_outcome" == "$valid" ]]; then
+      echo "$raw_outcome"
+      return 0
+    fi
+  done
+
+  # Invalid or empty → fallback to no-op-unclassified and warn
+  local warn_msg
+  warn_msg=$(printf '%s WARN activity.sh: agent=%s target=%s outcome=%s (invalid/missing) → mapped to no-op-unclassified' \
+    "$(now_iso)" "$agent" "$target" "${raw_outcome:-<empty>}")
+  echo "$warn_msg" >> "$tick_log"
+  echo "no-op-unclassified"
+}
 
 # Resolve target metadata: is_pr (bool), title, umbrella (#N or null).
 # One gh call — we fetch both PR and issue shape to handle either.
@@ -63,6 +105,35 @@ resolve_target() {
     return
   fi
   printf 'unknown\t\t\n'
+}
+
+# Get PR head SHA (null for issues or if PR doesn't exist)
+get_head_sha() {
+  local repo="$1" number="$2"
+  gh pr view "$number" --repo "$repo" --json headRefOid --jq '.headRefOid // ""' 2>/dev/null || echo ""
+}
+
+# Get timestamp of the most recent comment (null if no comments)
+get_last_comment_ts() {
+  local repo="$1" number="$2"
+  local comments_json reviews_json last_ts=""
+
+  # Fetch comments
+  comments_json=$(gh issue view "$number" --repo "$repo" --json comments --jq '[.comments[]? | .createdAt] | max // ""' 2>/dev/null || echo "")
+
+  # Fetch review comments (for PRs)
+  reviews_json=$(gh pr view "$number" --repo "$repo" --json reviews --jq '[.reviews[]? | .submittedAt] | max // ""' 2>/dev/null || echo "")
+
+  # Return the most recent of the two
+  if [[ -n "$comments_json" && -n "$reviews_json" ]]; then
+    last_ts=$(printf '%s\n%s' "$comments_json" "$reviews_json" | sort -r | head -1)
+  elif [[ -n "$comments_json" ]]; then
+    last_ts="$comments_json"
+  elif [[ -n "$reviews_json" ]]; then
+    last_ts="$reviews_json"
+  fi
+
+  echo "$last_ts"
 }
 
 # Scrape the last agent output line for the next-role hint.
@@ -211,7 +282,7 @@ cmd_end() {
   # New optional parameters for outcome and next hint from agent stdout
   local stdout_outcome="${7:-}" stdout_next="${8:-}"
 
-  local meta target_kind title umbrella outcome next_hint
+  local meta target_kind title umbrella raw_outcome outcome next_hint head_sha last_comment_ts
   meta=$(resolve_target "$repo" "$number")
   target_kind=$(cut -f1 <<<"$meta")
   title=$(cut -f2 <<<"$meta")
@@ -219,16 +290,23 @@ cmd_end() {
 
   # Prefer stdout-provided values, fall back to scraping
   if [[ -n "$stdout_outcome" ]]; then
-    outcome="$stdout_outcome"
+    raw_outcome="$stdout_outcome"
   else
-    outcome=$(scrape_outcome "$repo" "$number" "$kind")
+    raw_outcome=$(scrape_outcome "$repo" "$number" "$kind")
   fi
+
+  # Validate outcome through the closed enum (issue #891)
+  outcome=$(validate_outcome "$raw_outcome" "$exit_code" "$kind" "#${number}")
 
   if [[ -n "$stdout_next" ]]; then
     next_hint="$stdout_next"
   else
     next_hint=$(scrape_next_hint "$repo" "$number" "$kind")
   fi
+
+  # Capture head_sha and last_comment_ts (issue #891)
+  head_sha=$(get_head_sha "$repo" "$number")
+  last_comment_ts=$(get_last_comment_ts "$repo" "$number")
 
   local json
   json=$(jq -cn \
@@ -242,6 +320,8 @@ cmd_end() {
     --arg umbrella "$umbrella" \
     --arg outcome "$outcome" \
     --arg next_hint "$next_hint" \
+    --arg head_sha "$head_sha" \
+    --arg last_comment_ts "$last_comment_ts" \
     --argjson exit_code "$exit_code" \
     --argjson duration_s "$duration_s" \
     '{
@@ -256,8 +336,10 @@ cmd_end() {
       umbrella: (if $umbrella == "" then null else $umbrella end),
       exit_code: $exit_code,
       duration_s: $duration_s,
-      outcome: (if $outcome == "" then null else $outcome end),
-      next: (if $next_hint == "" then null elif $next_hint == "none" then null else $next_hint end)
+      outcome: $outcome,
+      next: (if $next_hint == "" then null elif $next_hint == "none" then null else $next_hint end),
+      head_sha: (if $head_sha == "" then null else $head_sha end),
+      last_comment_ts: (if $last_comment_ts == "" then null else $last_comment_ts end)
     }')
   write_event "$json"
 }
