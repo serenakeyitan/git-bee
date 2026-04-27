@@ -829,6 +829,68 @@ pick_target() {
   done
 }
 
+# Already-resolved skip predicate (issue #891).
+# Returns 0 if the most recent end event for (agent, target) was no-op-* AND
+# the PR's current head_sha and last_comment_ts both match the snapshot in that
+# event (meaning nothing has changed since the agent last inspected).
+# Returns 1 otherwise (allow dispatch).
+check_already_resolved() {
+  local agent="$1" number="$2"
+  local activity_log="${LOG_DIR}/activity.ndjson"
+
+  # No activity log means allow dispatch
+  [[ ! -f "$activity_log" ]] && return 1
+
+  # Find the most recent end event for this (agent, target)
+  local last_event
+  last_event=$(grep -F "\"event\":\"end\"" "$activity_log" | \
+    grep -F "\"agent\":\"$agent\"" | \
+    grep -F "\"target\":\"#${number}\"" | \
+    tail -1)
+
+  [[ -z "$last_event" ]] && return 1
+
+  # Extract outcome, head_sha, last_comment_ts from the last event
+  local outcome head_sha_snap last_comment_snap
+  outcome=$(jq -r '.outcome // ""' <<<"$last_event")
+  head_sha_snap=$(jq -r '.head_sha // ""' <<<"$last_event")
+  last_comment_snap=$(jq -r '.last_comment_ts // ""' <<<"$last_event")
+
+  # Only skip if outcome was no-op-*
+  if [[ ! "$outcome" =~ ^no-op- ]]; then
+    return 1  # Not a no-op outcome, allow dispatch
+  fi
+
+  # Get current PR state
+  local current_head_sha current_last_comment_ts
+  current_head_sha=$(gh pr view "$number" --repo "$REPO" --json headRefOid --jq '.headRefOid // ""' 2>/dev/null || echo "")
+
+  # Get current last comment timestamp (same logic as activity.sh get_last_comment_ts)
+  local comments_json reviews_json
+  comments_json=$(gh issue view "$number" --repo "$REPO" --json comments --jq '[.comments[]? | .createdAt] | max // ""' 2>/dev/null || echo "")
+  reviews_json=$(gh pr view "$number" --repo "$REPO" --json reviews --jq '[.reviews[]? | .submittedAt] | max // ""' 2>/dev/null || echo "")
+
+  if [[ -n "$comments_json" && -n "$reviews_json" ]]; then
+    current_last_comment_ts=$(printf '%s\n%s' "$comments_json" "$reviews_json" | sort -r | head -1)
+  elif [[ -n "$comments_json" ]]; then
+    current_last_comment_ts="$comments_json"
+  elif [[ -n "$reviews_json" ]]; then
+    current_last_comment_ts="$reviews_json"
+  else
+    current_last_comment_ts=""
+  fi
+
+  # Compare: if both head_sha and last_comment_ts unchanged, skip dispatch
+  if [[ "$current_head_sha" == "$head_sha_snap" ]] && \
+     [[ "$current_last_comment_ts" == "$last_comment_snap" ]]; then
+    log "already-resolved: skip dispatch of $agent on #$number (outcome=$outcome, head_sha unchanged, no new comments)"
+    return 0  # Skip dispatch
+  fi
+
+  # State changed — allow dispatch
+  return 1
+}
+
 # Hot loop detector — check if the same agent has been dispatched N times
 # with exit_code=0 and outcome=null or refused-by-guard outcomes to the same
 # target within a time window.
@@ -1624,6 +1686,14 @@ Auto-release $release_count/3. The \`breeze:quarantine-hotloop\` label has been 
 # Check for quarantine auto-release before dispatch
 if [[ -n "$target" ]]; then
   check_quarantine_release "$number"
+fi
+
+# Check if already resolved (issue #891) — skip dispatch if agent last ran
+# with no-op-* outcome and PR state (head_sha + last_comment_ts) unchanged
+if check_already_resolved "$kind" "$number"; then
+  log "skip: already-resolved for $kind on #$number — no state change since last no-op"
+  log "tick end (pid=$$ exit=already-resolved)"
+  exit 0
 fi
 
 # Check for hot loop before dispatching
