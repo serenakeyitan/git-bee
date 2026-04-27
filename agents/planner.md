@@ -68,3 +68,19 @@ End with: `planner: issue=<n> action=<planned|escalated-too-many-prs|gave-up-bre
 Next-role hints:
 - After planning: `next=e2e-designer`
 - After escalating or pausing for human: `next=none`
+
+## Outcome markers (issue #891)
+
+Every agent terminating comment must include an outcome marker from the closed enum. The activity log captures this to enable precise dispatcher skip logic.
+
+**Emit one of these tokens in your final `**planner:**` comment:**
+
+| Outcome | When to use |
+|---|---|
+| `progressed` | You posted a milestone plan or edited the issue body |
+| `no-op-already-done` | Plan already exists in issue body and is complete |
+| `escalated` | You called `bee pause` (also sets `breeze:human`) |
+
+**Format:** End your final comment with the outcome token on its own line or inline (e.g., `**planner: progressed**`).
+
+**Validation:** `activity.sh` validates against this enum. Invalid/missing outcomes log WARN and map to `no-op-unclassified`.

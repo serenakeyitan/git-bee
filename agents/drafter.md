@@ -111,3 +111,21 @@ Next-role hints:
 - After addressing review feedback: `next=reviewer` if changes made, `next=e2e` if already approved+fresh
 - After pausing for human: `next=none`
 - After closing an issue: `next=none`
+
+## Outcome markers (issue #891)
+
+Every agent terminating comment must include an outcome marker from the closed enum. The activity log captures this to enable precise dispatcher skip logic.
+
+**Emit one of these tokens in your final `**drafter:**` comment:**
+
+| Outcome | When to use |
+|---|---|
+| `progressed` | You took a state-changing action (push, comment, review, merge, pause, label) |
+| `no-op-already-done` | You inspected at this SHA and found nothing to do |
+| `no-op-waiting` | Blocked on another agent or human |
+| `no-op-stale-input` | Refused due to stale E2E or outdated approval marker |
+| `escalated` | You called `bee pause` (also sets `breeze:human`) |
+
+**Format:** End your final comment with the outcome token on its own line or inline (e.g., `**drafter: progressed**` or `**drafter:**\n\nDid X, Y, Z.\n\nprogressed`).
+
+**Validation:** `activity.sh` validates against this enum. Invalid/missing outcomes log WARN and map to `no-op-unclassified`. If you see that in the activity log, you forgot to emit an outcome — fix your terminating comment.

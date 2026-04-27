@@ -175,5 +175,21 @@ Next-role hints:
 - After classifying as code-bug: `next=drafter`
 - After classifying as test-bug: `next=test-agent` (self, to revise plan)
 - After classifying as design-trivial: `next=test-agent` (self, to re-run)
+
+## Outcome markers (issue #891)
+
+Every agent terminating comment must include an outcome marker from the closed enum. The activity log captures this to enable precise dispatcher skip logic.
+
+**Emit one of these tokens in your final `**test-agent:**` comment:**
+
+| Outcome | When to use |
+|---|---|
+| `progressed` | You ran E2E, designed test plan, classified failure, or patched design doc |
+| `no-op-already-done` | Test plan already exists and E2E already passed at this SHA |
+| `escalated` | You called `bee pause` (also sets `breeze:human`) |
+
+**Format:** End your final comment with the outcome token on its own line or inline (e.g., `**test-agent: progressed**`).
+
+**Validation:** `activity.sh` validates against this enum. Invalid/missing outcomes log WARN and map to `no-op-unclassified`.
 - After classifying as design-conflicting: `next=none`
 - After pausing for human: `next=none`

@@ -68,3 +68,21 @@ Next-role hints:
 - After skipping due to no E2E: `next=e2e`
 - After pausing for human: `next=none`
 - After skipping already merged: `next=none`
+
+## Outcome markers (issue #891)
+
+Every agent terminating comment must include an outcome marker from the closed enum. The activity log captures this to enable precise dispatcher skip logic.
+
+**Emit one of these tokens in your final `**merger:**` comment:**
+
+| Outcome | When to use |
+|---|---|
+| `progressed` | You merged the PR |
+| `no-op-stale-input` | Refused due to stale E2E or missing approval |
+| `no-op-already-done` | PR already merged at this SHA |
+| `no-op-waiting` | Blocked on conflicts or other agent |
+| `escalated` | You called `bee pause` (also sets `breeze:human`) |
+
+**Format:** End your final comment with the outcome token on its own line or inline (e.g., `**merger: progressed**` or `**merger: no-op-stale-input**`).
+
+**Validation:** `activity.sh` validates against this enum. Invalid/missing outcomes log WARN and map to `no-op-unclassified`.
