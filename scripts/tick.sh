@@ -843,13 +843,10 @@ check_already_resolved() {
 
   # Find the most recent end event for this (agent, target)
   local last_event
-  last_event=$(jq -r --arg agent "$agent" \
-    --arg target "#${number}" \
-    'select(.event == "end" and
-            .agent == $agent and
-            .target == $target) |
-     [., input] | .[0]' \
-    "$activity_log" 2>/dev/null | tail -1 || echo "")
+  last_event=$(grep -F "\"event\":\"end\"" "$activity_log" | \
+    grep -F "\"agent\":\"$agent\"" | \
+    grep -F "\"target\":\"#${number}\"" | \
+    tail -1)
 
   [[ -z "$last_event" ]] && return 1
 
