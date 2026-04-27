@@ -1440,7 +1440,7 @@ check_quarantine_release() {
   fi
 
   if [[ "$is_pr" == "true" ]]; then
-    # PR auto-release: new commits after quarantine
+    # PR auto-release: new commits after quarantine OR fix PR merged
     local current_sha pr_branch
     current_sha=$(gh pr view "$number" --repo "$REPO" --json headRefOid --jq '.headRefOid' 2>/dev/null || echo "")
 
@@ -1448,8 +1448,12 @@ check_quarantine_release() {
       return  # Can't get current SHA
     fi
 
+    local should_release=false
+    local release_reason=""
+
     pr_branch=$(gh pr view "$number" --repo "$REPO" --json headRefName --jq '.headRefName' 2>/dev/null || echo "")
 
+    # Check 1: New commits after quarantine
     if [[ -n "$pr_branch" ]]; then
       # Fetch the branch to ensure we have latest commits
       git fetch origin "$pr_branch" --quiet 2>/dev/null || true
@@ -1465,24 +1469,68 @@ check_quarantine_release() {
       fi
 
       if [[ -n "$newer_commits" ]]; then
-        # Increment release count
-        release_count=$((release_count + 1))
-        echo "$release_count" > "$release_file"
+        should_release=true
+        release_reason="new commits detected on PR #$number since quarantine"
+      fi
+    fi
 
-        log "auto-releasing quarantine on PR #$number (new commits detected, release $release_count/3)"
+    # Check 2: Fix PR merged on main (M2/PR 4 logic)
+    if [[ "$should_release" == "false" ]]; then
+      # Find any hot-loop bug issues filed about this PR
+      # Title pattern: "hot-loop: {agent} stuck on PR #N"
+      local bug_issues
+      bug_issues=$(gh issue list --repo "$REPO" --state all \
+        --search "hot-loop stuck on PR #$number in:title" \
+        --json number --jq '.[].number' 2>/dev/null || echo "")
 
-        # Remove quarantine label
-        gh issue edit "$number" --repo "$REPO" --remove-label "breeze:quarantine-hotloop" 2>&1 | tee -a "$LOG" || true
+      # Check if any merged PRs fix those bug issues
+      for bug_issue in $bug_issues; do
+        [[ -z "$bug_issue" ]] && continue
 
-        # Post comment about auto-release
-        local release_comment="**tick:**
+        # Find PRs that fix this bug issue (via "Fixes #bug-issue")
+        local fix_prs
+        fix_prs=$(gh pr list --repo "$REPO" --state merged \
+          --search "$bug_issue in:body" \
+          --json number,mergedAt,body 2>/dev/null | \
+          jq -r --arg bug "$bug_issue" '.[] |
+            select(.body | test("(Fixes|Closes|Resolves) #" + $bug + "\\b")) |
+            "\(.number)|\(.mergedAt)"' || echo "")
 
-Quarantine auto-released: New commits detected on PR #$number since quarantine was applied.
+        # Check if any fix PR merged after quarantine time
+        while IFS='|' read -r fix_pr fix_merged_at; do
+          [[ -z "$fix_pr" ]] && continue
+          [[ -z "$fix_merged_at" ]] && continue
+
+          local fix_merged_ts
+          fix_merged_ts=$(printf '"%s"' "$fix_merged_at" | jq -r 'sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601' 2>/dev/null || echo "0")
+
+          if [[ "$fix_merged_ts" -gt "$quarantine_ts" ]]; then
+            should_release=true
+            release_reason="fix PR #$fix_pr for bug issue #$bug_issue merged on main after quarantine"
+            break 2  # Break out of both loops
+          fi
+        done <<< "$fix_prs"
+      done
+    fi
+
+    if [[ "$should_release" == "true" ]]; then
+      # Increment release count
+      release_count=$((release_count + 1))
+      echo "$release_count" > "$release_file"
+
+      log "auto-releasing quarantine on PR #$number ($release_reason, release $release_count/3)"
+
+      # Remove quarantine label
+      gh issue edit "$number" --repo "$REPO" --remove-label "breeze:quarantine-hotloop" 2>&1 | tee -a "$LOG" || true
+
+      # Post comment about auto-release
+      local release_comment="**tick:**
+
+Quarantine auto-released: $release_reason.
 
 Auto-release $release_count/3. The \`breeze:quarantine-hotloop\` label has been removed and normal dispatch can resume."
 
-        gh issue comment "$number" --repo "$REPO" --body "$release_comment" 2>&1 | tee -a "$LOG" || true
-      fi
+      gh issue comment "$number" --repo "$REPO" --body "$release_comment" 2>&1 | tee -a "$LOG" || true
     fi
   else
     # Issue auto-release: human comment OR milestone PR merge after quarantine
