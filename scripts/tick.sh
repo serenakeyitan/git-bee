@@ -748,8 +748,20 @@ pick_target() {
       fi
       # If gate is open (rc=0), check for Phase 2 routing
       if [[ "$gate_rc" == "0" ]]; then
-        local issue_body
+        local issue_body issue_title
         issue_body=$(gh issue view "$n" --repo "$REPO" --json body --jq '.body' 2>/dev/null || echo "")
+        issue_title=$(gh issue view "$n" --repo "$REPO" --json title --jq '.title' 2>/dev/null || echo "")
+
+        # Skip Phase 2 routing for bug-report-shaped issues. Planner/test-agent
+        # don't have useful work on these — they're not design docs needing
+        # plans. Without this skip, dispatcher dispatches planner repeatedly
+        # on issues like 'hot-loop: ...' or 'Watchdog: ...' which the planner
+        # agent recognizes and self-exits, but wastes a tick + API call each
+        # time. Pattern observed today after #864 cleanup: closed bug issues
+        # kept getting re-dispatched until I noticed.
+        if echo "$issue_title" | grep -qiE "^(hot-loop:|watchdog:|bug:|regression:|fix:|error:)"; then
+          continue
+        fi
 
         # Check for milestone plan
         if ! echo "$issue_body" | grep -q "^## Milestone plan"; then
