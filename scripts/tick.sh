@@ -1175,12 +1175,31 @@ for t in $all_targets; do
 
   hint=$(check_next_hint "$t")
   if [[ -n "$hint" && "$hint" != "none" ]]; then
-    # Check anti-loop safety
-    if ! check_hint_loop "$hint" "$t"; then
-      hint_target="$hint $t"
-      log "dispatch: using hint from activity log - $hint on #$t"
-      break
+    if check_hint_loop "$hint" "$t"; then
+      continue
     fi
+    # Validate hint against current pipeline position for PRs (#855).
+    # Stale hints from before the PR's state advanced cause re-quarantine loops.
+    is_pr=$(gh pr view "$t" --repo "$REPO" --json number --jq '.number' 2>/dev/null || echo "")
+    if [[ -n "$is_pr" ]]; then
+      pr_json=$(gh pr view "$t" --repo "$REPO" --json number,reviewDecision,labels,reviews,comments,headRefOid,mergeable,mergeStateStatus 2>/dev/null || echo "{}")
+      position=$(pr_pipeline_position "$pr_json")
+      expected_role=""
+      case "$position" in
+        ready-to-merge)        expected_role="merger" ;;
+        approved-e2e-stale)    expected_role="test-agent" ;;
+        approved-e2e-failed)   expected_role="test-agent" ;;
+        conflicted|needs-drafter-feedback|needs-drafter-review) expected_role="drafter" ;;
+        needs-review)          expected_role="reviewer" ;;
+      esac
+      if [[ -n "$expected_role" && "$hint" != "$expected_role" ]]; then
+        log "dispatch: hint stale ($hint vs expected $expected_role for position $position on #$t) — discarding"
+        continue
+      fi
+    fi
+    hint_target="$hint $t"
+    log "dispatch: using hint from activity log - $hint on #$t"
+    break
   fi
 done
 
