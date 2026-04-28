@@ -42,6 +42,7 @@ Usage:
   bee help               Show help (this text)
   bee status             Print a terse three-section status block
   bee status --json      Same data, JSON-encoded
+  bee status --breeze-compat  Output in breeze status format for cross-product integration
   bee pause <n> <reason> Label issue/PR #n with breeze:human and comment
   bee request-changes <n> [reason]  Post a bee:changes-requested marker on PR #n (routes to drafter)
   bee config get [key]   Get configuration value(s)
@@ -389,11 +390,82 @@ render_json() {
     }'
 }
 
+render_breeze_compat() {
+  # Breeze-compatible status output matching the schema from
+  # first-tree/src/products/breeze/engine/commands/status.ts
+  # Emit text format matching breeze's `runStatus` output
+
+  local identity lock_state heartbeat_epoch active_tasks note
+
+  # Identity: use gh whoami to get current GitHub user
+  identity=$(gh api user --jq '.login' 2>/dev/null || echo "unknown")
+  identity="${identity}@github.com"
+
+  # Lock state: map from git-bee's agent state
+  if [[ "$AGENT_STATE" == "running" ]]; then
+    lock_state="running"
+    heartbeat_epoch=$(date -u +%s)
+    # Active tasks = 1 if agent is running on a target, 0 otherwise
+    if [[ -n "$AGENT_TARGET" ]]; then
+      active_tasks=1
+    else
+      active_tasks=0
+    fi
+    # Note field: current agent role and target
+    if [[ -n "$AGENT_ROLE" ]] && [[ -n "$AGENT_TARGET" ]]; then
+      note="${AGENT_ROLE}:${AGENT_TARGET}"
+    elif [[ -n "$AGENT_ROLE" ]]; then
+      note="$AGENT_ROLE"
+    else
+      note="active"
+    fi
+  else
+    lock_state="not running"
+    heartbeat_epoch=""
+    active_tasks=0
+    note=""
+  fi
+
+  # Output in breeze status format
+  echo "breeze-runner status"
+  echo "identity: ${identity}"
+  echo "allowed repos: ${REPO}"
+
+  if [[ "$lock_state" == "running" ]]; then
+    echo "lock: ${lock_state} pid=${AGENT_PID} heartbeat=${heartbeat_epoch} active_tasks=${active_tasks} note=${note}"
+  else
+    echo "lock: ${lock_state}"
+  fi
+
+  # Runtime status fields (approximations from git-bee state)
+  if [[ -n "$TICK_LOG_LAST" ]]; then
+    # Extract timestamp from last tick log line if present
+    local last_poll_iso last_poll_epoch
+    last_poll_iso=$(echo "$TICK_LOG_LAST" | grep -oE '^[0-9T:Z\-]+' || true)
+    if [[ -n "$last_poll_iso" ]]; then
+      last_poll_epoch=$(_iso_to_epoch "$last_poll_iso")
+      if [[ "$last_poll_epoch" != "0" ]]; then
+        echo "last_poll_epoch: ${last_poll_epoch}"
+      fi
+    fi
+  fi
+
+  # Active/queued tasks from git-bee perspective
+  echo "active_tasks: ${active_tasks}"
+  echo "queued_tasks: $((GH_ISSUES_OPEN + GH_PRS_OPEN - active_tasks))"
+
+  # Last note from tick log
+  if [[ -n "$TICK_LOG_LAST" ]]; then
+    echo "last_note: ${TICK_LOG_LAST}"
+  fi
+}
+
 cmd_status() {
   local fmt="text"
   case "${1:-}" in
     "") ;;
     --json) fmt="json" ;;
+    --breeze-compat) fmt="breeze-compat" ;;
     *) echo "bee status: unknown flag: $1" >&2; usage >&2; exit 2 ;;
   esac
 
@@ -404,6 +476,8 @@ cmd_status() {
 
   if [[ "$fmt" == "json" ]]; then
     render_json
+  elif [[ "$fmt" == "breeze-compat" ]]; then
+    render_breeze_compat
   else
     render_text
   fi
