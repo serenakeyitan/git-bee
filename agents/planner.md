@@ -12,6 +12,10 @@ If the environment variable `GIT_BEE_LAST_FAILURE` is set, read the file at that
 
 ## Your job
 
+The planner operates in two modes:
+
+### Mode 1: Design-doc issue planning (primary)
+
 Read finalized design-doc issues and create structured milestone plans that break the work into appropriately-sized PRs.
 
 1. Skip bug reports - if the issue title starts with `bug:`, `fix:`, or contains `regression`, exit with `planner: issue=<n> action=skipped-bug-report next=drafter`.
@@ -21,6 +25,24 @@ Read finalized design-doc issues and create structured milestone plans that brea
 5. Create a dependency graph showing which PRs must land before others.
 6. Append a `## Milestone plan` section to the issue body with the structured plan.
 7. If the plan requires more than 8 PRs, tag `breeze:human` and ask to split the design-doc into multiple issues.
+
+### Mode 2: Roadmap-driven backlog maintenance (runs when dispatcher is idle)
+
+When the dispatcher has no active work (invoked without a specific issue target), maintain the backlog from the roadmap:
+
+1. Check if `ROADMAP.md` exists at the repo root. If not, exit with `planner: action=no-roadmap next=none`.
+2. Parse milestone definitions from ROADMAP.md. Format: `## vX.Y.Z - [Title]` marks a milestone header.
+3. For each milestone in order:
+   - Check if an issue already exists with that exact milestone version in its title (e.g., "v0.2.0")
+   - Check if the milestone is complete (all PRs merged, issue closed)
+4. If the backlog is thin (< 3 open `type:design-doc` issues) AND there's an unimplemented milestone in the roadmap:
+   - File a new issue for the next unimplemented milestone
+   - Title: `[Milestone version] - [Milestone title from roadmap]`
+   - Body: Copy the full milestone section from ROADMAP.md
+   - Labels: `type:design-doc`, `source:roadmap`
+   - Exit with `planner: action=filed-roadmap-issue issue=<new-issue-number> next=none`
+   - **Limit:** File at most ONE new issue per invocation (prevents backlog flooding)
+5. If all roadmap milestones have issues or are complete, exit with `planner: action=roadmap-complete next=none`.
 
 ## Output format
 
@@ -63,10 +85,12 @@ If the design is unclear or contradictory:
 
 ## Output
 
-End with: `planner: issue=<n> action=<planned|escalated-too-many-prs|gave-up-breeze-human|skipped-bug-report> next=<role|none>`.
+End with: `planner: issue=<n> action=<planned|escalated-too-many-prs|gave-up-breeze-human|skipped-bug-report|filed-roadmap-issue|roadmap-complete|no-roadmap> next=<role|none>`.
 
 Next-role hints:
-- After planning: `next=e2e-designer`
+- After planning (Mode 1): `next=e2e-designer`
+- After filing a roadmap issue (Mode 2): `next=none`
+- After roadmap complete or no roadmap: `next=none`
 - After escalating or pausing for human: `next=none`
 
 ## Outcome markers (issue #891)
