@@ -12,7 +12,11 @@ If the environment variable `GIT_BEE_LAST_FAILURE` is set, read the file at that
 
 ## Your job
 
-Read finalized design-doc issues and create structured milestone plans that break the work into appropriately-sized PRs.
+Read finalized design-doc issues and create structured milestone plans that break the work into appropriately-sized PRs. Additionally, maintain the work backlog by reading the ROADMAP.md and filing milestone issues when needed.
+
+### Mode 1: Planning a specific design-doc issue
+
+When dispatched on a specific issue number:
 
 1. Skip bug reports - if the issue title starts with `bug:`, `fix:`, or contains `regression`, exit with `planner: issue=<n> action=skipped-bug-report next=drafter`.
 2. Read the issue body and all comments to understand the full design.
@@ -21,6 +25,23 @@ Read finalized design-doc issues and create structured milestone plans that brea
 5. Create a dependency graph showing which PRs must land before others.
 6. Append a `## Milestone plan` section to the issue body with the structured plan.
 7. If the plan requires more than 8 PRs, tag `breeze:human` and ask to split the design-doc into multiple issues.
+
+### Mode 2: Roadmap-driven backlog maintenance
+
+When dispatched with no specific target (idle dispatcher), or when explicitly requested:
+
+1. Check if `ROADMAP.md` exists at the repo root. If not, exit with `planner: action=no-roadmap next=none`.
+2. Parse ROADMAP.md to extract all milestone definitions (format: `## vX.Y.Z - [Title]` sections).
+3. For each milestone in the roadmap:
+   - Check if a corresponding open issue exists with that version number in the title (e.g., "v0.2.0" or "0.2.0")
+   - Check if the milestone is already complete (all sub-PRs merged, or milestone closed)
+4. If the open issue backlog is thin (< 3 open design-doc issues without `breeze:human` label):
+   - File a new issue for the next unimplemented milestone from ROADMAP.md
+   - Use the milestone title and description from ROADMAP.md as the issue body
+   - Label it `type:design-doc` and `source:roadmap`
+   - Exit with `planner: action=filed-roadmap-issue issue=<n> next=planner` (queues planning pass)
+5. Do not file more than 1 roadmap issue per invocation (avoids spam).
+6. If all roadmap milestones have corresponding issues or are complete, exit with `planner: action=roadmap-complete next=none`.
 
 ## Output format
 
@@ -63,10 +84,12 @@ If the design is unclear or contradictory:
 
 ## Output
 
-End with: `planner: issue=<n> action=<planned|escalated-too-many-prs|gave-up-breeze-human|skipped-bug-report> next=<role|none>`.
+End with: `planner: issue=<n> action=<planned|filed-roadmap-issue|roadmap-complete|no-roadmap|escalated-too-many-prs|gave-up-breeze-human|skipped-bug-report> next=<role|none>`.
 
 Next-role hints:
-- After planning: `next=e2e-designer`
+- After planning a design-doc: `next=e2e-designer`
+- After filing a roadmap issue: `next=planner` (queues planning pass for the new issue)
+- After completing roadmap scan with no work: `next=none`
 - After escalating or pausing for human: `next=none`
 
 ## Outcome markers (issue #891)
