@@ -127,6 +127,23 @@ test_generic_meta_loop() {
   return 0
 }
 
+# Test (h): Heartbeat + watchdog deadman switch
+test_heartbeat_watchdog() {
+  echo ""
+  echo "Test (h): Heartbeat + watchdog deadman switch"
+  echo "---------------------------------------------"
+
+  # Run the dedicated test script
+  if bash "$(dirname "$0")/test-heartbeat-watchdog.sh" >/dev/null 2>&1; then
+    echo "✅ Test (h) passed: Heartbeat + watchdog works correctly"
+  else
+    echo "❌ Test (h) failed: Heartbeat + watchdog error"
+    return 1
+  fi
+
+  return 0
+}
+
 # Run all tests
 test_ndjson_capture
 test_atomic_write
@@ -135,6 +152,7 @@ test_result_json
 test_metrics_capture
 test_structured_assertions
 test_generic_meta_loop
+test_heartbeat_watchdog
 
 echo ""
 echo "================================="

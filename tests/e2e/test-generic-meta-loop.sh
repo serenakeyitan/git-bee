@@ -63,7 +63,7 @@ echo ""
 echo "Test (b): Second filing within 1h should trigger quarantine"
 echo "-----------------------------------------------------------"
 
-TEST_TITLE_B="[E2E Test] hot-loop: tick stuck on PR #999 $(date +%s)"
+TEST_TITLE_B="[E2E Test] hot-loop: tick generic meta-loop detection $(date +%s)"
 TEST_BODY_B1="**tick:**
 
 First occurrence of this hot-loop pattern.
@@ -74,8 +74,7 @@ TEST_BODY_B2="**tick:**
 Second occurrence within the window.
 Should trigger quarantine."
 
-# Create a test PR #999 for this test (if it doesn't exist)
-# Note: We can't easily create PR #999, so we'll just test the issue quarantine
+# Test meta-loop detection on issue (no PR referenced in title)
 issue_b=$(file_or_update_issue "$REPO" "$TEST_TITLE_B" "$TEST_BODY_B1" "" "tick")
 echo "  Filed first occurrence as issue #$issue_b"
 
