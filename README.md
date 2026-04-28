@@ -125,6 +125,7 @@ Stale `breeze:wip` = labeled-event timestamp older than 2 hours. Any agent may t
 - **3-crash rollback**: three consecutive non-zero ticks roll back to the last known-good SHA and pause the loop via `~/.git-bee/ROLLBACK`.
 - **Hot-loop quarantine**: dispatching the same agent on the same target twice within 5 minutes with `outcome=null` quarantines the PR and files a bug.
 - **Pre-push guard**: `scripts/preflight-push.sh` refuses pushes targeting `main` or `master`.
+- **Heartbeat + watchdog**: `tick.sh` writes `~/.git-bee/heartbeat` on every tick; `watchdog.sh` checks it every 5 minutes and files an alert if the heartbeat is stale (>15 min), indicating the tick loop is wedged.
 
 ## Setup
 
@@ -146,6 +147,15 @@ This validates `tick.sh` and other critical scripts before allowing pushes to ma
 cp launchd/com.serenakeyitan.git-bee.plist ~/Library/LaunchAgents/
 launchctl load ~/Library/LaunchAgents/com.serenakeyitan.git-bee.plist
 ```
+
+**Watchdog (optional but recommended for unattended operation):**
+
+```bash
+cp launchd/com.serenakeyitan.git-bee.watchdog.plist ~/Library/LaunchAgents/
+launchctl load ~/Library/LaunchAgents/com.serenakeyitan.git-bee.watchdog.plist
+```
+
+The watchdog detects if the tick loop wedges and files an alert issue automatically.
 
 Uninstall with `launchctl unload ...`.
 
