@@ -671,7 +671,7 @@ pick_target() {
   #
   #   ready-to-merge         → merger
   #   approved-e2e-stale     → test-agent
-  #   approved-e2e-failed    → test-agent
+  #   approved-e2e-failed    → drafter (was: test-agent — caused #897 loop)
   #   conflicted             → drafter
   #   needs-drafter-feedback → drafter
   #   needs-drafter-review   → drafter
@@ -697,7 +697,14 @@ pick_target() {
         return
         ;;
       approved-e2e-failed)
-        echo "test-agent $pr_num"
+        # E2E failed at HEAD. test-agent already classified the failure
+        # (code-bug | test-bug | lazy-run | design-trivial | design-conflicting)
+        # in its **E2E trace (fail)** comment. Re-running test-agent just
+        # repeats the same classification — wasteful and triggers loops
+        # (#897 today). Route to drafter, who reads the failure trace and
+        # decides: fix the code (code-bug), rewrite the test (test-bug),
+        # re-run (lazy-run), or escalate (design-*).
+        echo "drafter $pr_num"
         return
         ;;
       conflicted|needs-drafter-feedback|needs-drafter-review)
@@ -1279,7 +1286,7 @@ for t in $all_targets; do
       case "$position" in
         ready-to-merge)        expected_role="merger" ;;
         approved-e2e-stale)    expected_role="test-agent" ;;
-        approved-e2e-failed)   expected_role="test-agent" ;;
+        approved-e2e-failed)   expected_role="drafter" ;;
         conflicted|needs-drafter-feedback|needs-drafter-review) expected_role="drafter" ;;
         needs-review)          expected_role="reviewer" ;;
       esac
