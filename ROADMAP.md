@@ -24,13 +24,13 @@ This roadmap defines the canonical next N work items for autonomous agent execut
 - ✓ PR 5: Nightly janitor for stale quarantines (#887)
 - ✓ PR 6: Heartbeat + deadman switch (#897)
 
-### M3 — Roadmap-driven work queue
+### M3 — Roadmap-driven work queue ✓
 
 **Problem:** Without explicit roadmap, agents sit idle or invent features.
 
 - ✓ PR 7: Planner reads ROADMAP.md (#917)
-- PR 8: ROADMAP.md scaffold (this file)
-- PR 9: Dispatcher prefers roadmap-sourced issues
+- ✓ PR 8: ROADMAP.md scaffold (#918)
+- ✓ PR 9: Dispatcher prefers roadmap-sourced issues (#919)
 
 ### M4 — Minimal breeze alignment (Phase 1c)
 
