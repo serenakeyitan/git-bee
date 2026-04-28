@@ -53,6 +53,7 @@ validate_outcome() {
 
   # Valid enum values
   local valid_outcomes=(
+    # Generic outcomes (any agent)
     "progressed"
     "no-op-already-done"
     "no-op-waiting"
@@ -60,6 +61,27 @@ validate_outcome() {
     "escalated"
     "error"
     "no-op-unclassified"
+    # Reviewer-specific
+    "approved"
+    "changes-requested"
+    "skipped-already-reviewed"
+    # Test-agent specific (per agents/test-agent.md classifications)
+    "passed"
+    "skipped-scripts-only"
+    "code-bug"
+    "test-bug"
+    "lazy-run"
+    "design-trivial"
+    "design-conflicting"
+    # Merger-specific
+    "merged"
+    "skipped-not-approved"
+    "skipped-stale-e2e"
+    # Drafter-specific
+    "implemented"
+    "implemented-tiny"
+    "drafted"
+    "designed-test-plan"
   )
 
   # Check if raw_outcome is in the valid set
