@@ -856,9 +856,14 @@ check_already_resolved() {
   head_sha_snap=$(jq -r '.head_sha // ""' <<<"$last_event")
   last_comment_snap=$(jq -r '.last_comment_ts // ""' <<<"$last_event")
 
-  # Only skip if outcome was no-op-*
-  if [[ ! "$outcome" =~ ^no-op- ]]; then
-    return 1  # Not a no-op outcome, allow dispatch
+  # Only skip if outcome was an EXPLICIT no-op classification.
+  # no-op-unclassified means "we don't know what happened" — that's a retry
+  # signal, NOT a skip signal. Today (2026-04-28) test-agent legitimately
+  # returned outcome=code-bug on #897, which activity.sh mapped to
+  # no-op-unclassified because the enum is incomplete; the predicate then
+  # skipped every retry, stranding #897 forever.
+  if [[ ! "$outcome" =~ ^no-op-(already-done|waiting|stale-input)$ ]]; then
+    return 1  # Not an explicit no-op outcome, allow dispatch
   fi
 
   # Get current PR state
