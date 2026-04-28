@@ -191,5 +191,3 @@ Every agent terminating comment must include an outcome marker from the closed e
 **Format:** End your final comment with the outcome token on its own line or inline (e.g., `**test-agent: progressed**`).
 
 **Validation:** `activity.sh` validates against this enum. Invalid/missing outcomes log WARN and map to `no-op-unclassified`.
-- After classifying as design-conflicting: `next=none`
-- After pausing for human: `next=none`

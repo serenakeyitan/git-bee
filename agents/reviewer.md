@@ -119,6 +119,6 @@ Every agent terminating comment must include an outcome marker from the closed e
 | `no-op-waiting` | Blocked on another agent or human |
 | `escalated` | You called `bee pause` (also sets `breeze:human`) |
 
-**Format:** The verdict comment already contains the outcome. For approve, `**reviewer verdict: approved**` maps to outcome `approved` (which activity.sh recognizes as `progressed`). For request-changes, `**reviewer verdict: changes-requested**` maps to `changes-requested` (also `progressed`). When skipping, exit silently without posting a comment (no outcome needed).
+**Format:** Inline in your final comment body. When posting a review verdict (`**reviewer verdict: approved**` or `**reviewer verdict: changes-requested**`), append `outcome=progressed` on a new line. The verdict strings are for human readability and dispatcher parsing, but the outcome token is always `progressed` when you take action. When skipping review (already reviewed at HEAD), exit silently without posting a comment (no outcome needed).
 
 **Validation:** `activity.sh` validates against this enum. Invalid/missing outcomes log WARN and map to `no-op-unclassified`.
