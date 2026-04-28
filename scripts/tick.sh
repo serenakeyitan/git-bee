@@ -36,7 +36,7 @@ file_or_update_issue() {
     log "file_or_update_issue: #$existing already open with title '''$title''' — appending comment"
     gh issue comment "$existing" --repo "$repo" --body "$body" >/dev/null 2>&1 || true
     # Check for generic meta-loop on update
-    check_generic_meta_loop "$repo" "$agent_role" "$title" "$existing" || true
+    check_generic_meta_loop "$repo" "$agent_role" "$title" "$existing" >/dev/null || true
     echo "$existing"
     return 0
   fi
@@ -46,7 +46,7 @@ file_or_update_issue() {
   num=$(echo "$url" | grep -oE '/issues/[0-9]+' | grep -oE '[0-9]+' || echo "")
   # Check for generic meta-loop on creation
   if [[ -n "$num" ]]; then
-    check_generic_meta_loop "$repo" "$agent_role" "$title" "$num" || true
+    check_generic_meta_loop "$repo" "$agent_role" "$title" "$num" >/dev/null || true
   fi
   echo "$num"
 }
@@ -171,6 +171,10 @@ trap record_tick_exit EXIT
 
 # Capture current SHA at start
 TICK_START_SHA=$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo "unknown")
+
+# Write heartbeat file to signal that tick is alive (issue #798 M2/PR 6)
+HEARTBEAT_FILE="${LOG_DIR}/heartbeat"
+echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) pid=$$ sha=$TICK_START_SHA" > "$HEARTBEAT_FILE"
 
 # Guard -1 (moved up): ROLLBACK marker — if it exists, exit early without dispatching
 # This must run BEFORE the crash detector to prevent rollback loops
