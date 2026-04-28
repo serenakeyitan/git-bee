@@ -509,7 +509,7 @@ has_human_approval() {
   local has_reviewer_verdict_approved
   has_reviewer_verdict_approved=$(echo "$pr_json" | jq --arg head_ts "$head_timestamp" '
     any(.reviews[]?;
-      (.body // "" | test("\\*\\*reviewer verdict: approved\\*\\*")) and
+      (.body // "" | test("^\\*\\*reviewer verdict: approved\\*\\*")) and
       ((.submittedAt // "" | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) >= ($head_ts | tonumber))
     )
   ' 2>/dev/null || echo "false")
@@ -636,7 +636,7 @@ pr_pipeline_position() {
   local changes_requested_at_head reviews_at_head changes_requested_in_body
   changes_requested_at_head=$(echo "$pr_json" | jq -r --arg sha "$pr_sha"     '[.reviews[]? | select(.commit.oid == $sha and .state == "CHANGES_REQUESTED")] | length > 0' 2>/dev/null || echo "false")
   reviews_at_head=$(echo "$pr_json" | jq -r --arg sha "$pr_sha"     '[.reviews[]? | select(.commit.oid == $sha)] | length' 2>/dev/null || echo "0")
-  changes_requested_in_body=$(echo "$pr_json" | jq -r --arg sha "$pr_sha"     '[.reviews[]? | select(.commit.oid == $sha) | select(.body | test("\\*\\*reviewer verdict: changes-requested\\*\\*"))] | length > 0' 2>/dev/null || echo "false")
+  changes_requested_in_body=$(echo "$pr_json" | jq -r --arg sha "$pr_sha"     '[.reviews[]? | select(.commit.oid == $sha) | select(.body | test("^\\*\\*reviewer verdict: changes-requested\\*\\*"))] | length > 0' 2>/dev/null || echo "false")
 
   if [[ "$changes_requested_at_head" == "true" || "$changes_requested_in_body" == "true" ]]; then
     echo "needs-drafter-review"
