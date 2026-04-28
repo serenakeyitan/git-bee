@@ -105,3 +105,20 @@ Next-role hints:
 - After requesting changes: `next=drafter`
 - After pausing for human: `next=none`
 - After skipping already reviewed: `next=none`
+
+## Outcome markers (issue #891)
+
+Every agent terminating comment must include an outcome marker from the closed enum. The activity log captures this to enable precise dispatcher skip logic.
+
+**Emit one of these tokens in your final `**reviewer:**` or `**reviewer verdict:**` comment:**
+
+| Outcome | When to use |
+|---|---|
+| `progressed` | You posted a review (approve or request-changes) |
+| `no-op-already-done` | You already reviewed at this SHA and found no new commits |
+| `no-op-waiting` | Blocked on another agent or human |
+| `escalated` | You called `bee pause` (also sets `breeze:human`) |
+
+**Format:** Inline in your final comment body. When posting a review verdict (`**reviewer verdict: approved**` or `**reviewer verdict: changes-requested**`), append `outcome=progressed` on a new line. The verdict strings are for human readability and dispatcher parsing, but the outcome token is always `progressed` when you take action. When skipping review (already reviewed at HEAD), exit silently without posting a comment (no outcome needed).
+
+**Validation:** `activity.sh` validates against this enum. Invalid/missing outcomes log WARN and map to `no-op-unclassified`.
