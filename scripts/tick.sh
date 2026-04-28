@@ -749,8 +749,11 @@ pick_target() {
             | select(.labels | map(.name) | index("breeze:wip") | not)
             | select(.labels | map(.name) | index("breeze:human") | not)
             | select(.labels | map(.name) | index("breeze:quarantine-hotloop") | not)
-            | . + {_prio: (if (.labels | map(.name) | index("priority:high")) then 0 else 1 end)} ]
-          | sort_by(._prio)
+            | . + {
+                _roadmap_prio: (if (.labels | map(.name) | index("source:roadmap")) then 0 else 1 end),
+                _priority_prio: (if (.labels | map(.name) | index("priority:high")) then 0 else 1 end)
+              } ]
+          | sort_by([._roadmap_prio, ._priority_prio])
           | .[].number' 2>/dev/null || true)
 
   for n in $all_open_issues; do
