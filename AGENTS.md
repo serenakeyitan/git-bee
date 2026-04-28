@@ -67,6 +67,36 @@ Every agent ends its stdout with one line matching:
 
 `tick.sh` parses this to populate `activity.ndjson` and to drive next-role hints. Acceptable field names: `action=`, `result=`, `verdict=`. If none is present, the tick treats it as a null outcome and writes a failure file.
 
+## Outcome contract (issue #891)
+
+Every agent's terminating comment must include an **outcome marker** from a closed enum. The activity log captures this to enable the dispatcher to skip re-dispatch when nothing has changed since the agent's last no-op run.
+
+### Closed outcome enum
+
+| Outcome | Meaning | Example agents |
+|---|---|---|
+| `progressed` | Agent took a state-changing action (push, comment, review, merge, pause, label) | All agents when they do work |
+| `no-op-already-done` | Agent inspected at this SHA and found nothing to do | Reviewer already reviewed HEAD, test-agent already passed E2E at HEAD |
+| `no-op-waiting` | Blocked on another agent or human | Merger waiting for E2E, drafter waiting for approval |
+| `no-op-stale-input` | Refused due to stale E2E or outdated approval marker | Merger refuses stale E2E pass |
+| `escalated` | Agent called `bee pause` (also sets `breeze:human`) | Any agent on blocker |
+| `error` | `exit_code != 0` | Automatic mapping by `activity.sh` |
+| `no-op-unclassified` | Fallback when outcome missing/invalid (WARN in `tick.log`) | Agent bug — fix the terminating comment |
+
+### Enforcement and validation
+
+- **`activity.sh cmd_end`** validates outcome via `validate_outcome()`. If `exit_code != 0`, outcome is forced to `error`. If outcome is empty or invalid, it maps to `no-op-unclassified` and logs WARN to `tick.log`.
+- **`activity.sh cmd_end`** captures `head_sha` (PR only) and `last_comment_ts` in the `end` event.
+- **`tick.sh check_already_resolved`** runs BEFORE `check_hot_loop`. If the most recent `end` event for `(agent, target)` was `no-op-*` AND the PR's current `head_sha` and `last_comment_ts` both match the snapshot in that event, the dispatcher skips dispatch. Re-dispatch happens when either SHA or comments advance.
+
+### Trade-off accepted
+
+Single-account mode means bee cannot distinguish bee comments from human comments without HTML markers on every code path. We accept that bee's own comments will trigger re-dispatch — small waste, simple rule. The hot-loop detector still catches genuine pathology.
+
+### Hot-loop detector as backstop
+
+With `check_already_resolved` in place, the hot-loop detector returns to being a true backstop for genuine agent bugs (infinite loops, SIGSEGVs, prompt regression), not the front-line defense against routing disagreements.
+
 ## Claims
 
 Claim acquisition is label-based (via `breeze:wip`) plus a freshness comment marker (`<!-- breeze:claimed-at=<ISO8601> by=<agent-id> -->`). A claim is stale once the labeled-event timestamp is older than `CLAIM_TTL_SECONDS` (default 7200 = 2h). Any agent may take over a stale claim.
