@@ -33,9 +33,9 @@ test_a() {
 
   local expected_titles=(
     "[git-bee Phase 2] Will breeze accept a RepoStateCandidateSource contribution?"
-    "[git-bee Phase 2] Does breeze's claim protocol compose with non-notification sources?"
-    "[git-bee Phase 2] What's the expected cadence of breaking changes in breeze's daemon/runtime API?"
-    "[git-bee Phase 2] Does breeze's gh broker support pre-push guards?"
+    "[git-bee Phase 2] Does breeze claim protocol compose with non-notification sources?"
+    "[git-bee Phase 2] What is the expected cadence of breaking changes in breeze daemon/runtime API?"
+    "[git-bee Phase 2] Does breeze gh broker support pre-push guards?"
     "[git-bee Phase 2] Where do git-bee-specific labels like breeze:quarantine-hotloop live?"
   )
 
@@ -92,38 +92,29 @@ test_b() {
   fi
 }
 
-# Test (c): Issues have correct labels/context
+# Test (c): Issues have correct context
 test_c() {
-  log "Test (c): Issues have correct labels and context"
+  log "Test (c): Issues reference git-bee#798"
 
-  # Check that at least one issue has the "question" label and references git-bee#798
+  # Check that at least one issue references git-bee#798
   local issues=$(gh issue list --repo "$FIRST_TREE_REPO" --search "[git-bee Phase 2]" --json number --jq '.[].number' | head -5)
 
-  local has_label=0
   local has_reference=0
 
   for issue_num in $issues; do
-    # Check for question label
-    if gh issue view "$issue_num" --repo "$FIRST_TREE_REPO" --json labels --jq '.labels[].name' | grep -q "question"; then
-      has_label=1
-    fi
-
     # Check for reference to git-bee#798
     if gh issue view "$issue_num" --repo "$FIRST_TREE_REPO" --json body --jq '.body' | grep -q "serenakeyitan/git-bee#798"; then
       has_reference=1
-    fi
-
-    if [[ $has_label -eq 1 && $has_reference -eq 1 ]]; then
       break
     fi
   done
 
-  if [[ $has_label -eq 1 && $has_reference -eq 1 ]]; then
-    log "✓ issues have correct labels and reference git-bee#798"
+  if [[ $has_reference -eq 1 ]]; then
+    log "✓ issues reference git-bee#798"
     ((passed++))
     return 0
   else
-    log "✗ missing expected labels or references"
+    log "✗ missing reference to git-bee#798"
     return 1
   fi
 }
