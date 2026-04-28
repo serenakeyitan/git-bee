@@ -68,14 +68,17 @@ if (( age_minutes >= WEDGE_THRESHOLD_MINUTES )); then
   # File alert issue (idempotent)
   # Use file_or_update_issue if available, otherwise direct create
   alert_title="Watchdog: tick loop wedged (heartbeat stale for ${age_minutes}m)"
-  alert_body=$(cat <<EOF
+  current_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+  # Build alert body without nested command substitution
+  read -r -d '' alert_body <<EOF || true
 **watchdog:**
 
 The tick loop has not updated its heartbeat file in ${age_minutes} minutes (threshold: ${WEDGE_THRESHOLD_MINUTES}m).
 
-**Heartbeat file:** \`$HEARTBEAT_FILE\`
-**Last heartbeat:** $heartbeat_ts
-**Current time:** $(date -u +%Y-%m-%dT%H:%M:%SZ)
+**Heartbeat file:** \`${HEARTBEAT_FILE}\`
+**Last heartbeat:** ${heartbeat_ts}
+**Current time:** ${current_time}
 
 This indicates the tick loop is either:
 1. Wedged (running but stuck in an infinite loop or blocking operation)
@@ -107,7 +110,6 @@ ls -l /tmp/git-bee-agent.pid
 
 This issue was auto-filed by the watchdog deadman switch (issue #798 M2/PR 6).
 EOF
-)
 
   # Check if gh and git are available
   if command -v gh >/dev/null 2>&1 && command -v git >/dev/null 2>&1; then
