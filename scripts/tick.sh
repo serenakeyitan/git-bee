@@ -36,7 +36,7 @@ file_or_update_issue() {
     log "file_or_update_issue: #$existing already open with title '''$title''' — appending comment"
     gh issue comment "$existing" --repo "$repo" --body "$body" >/dev/null 2>&1 || true
     # Check for generic meta-loop on update
-    check_generic_meta_loop "$repo" "$agent_role" "$title" "$existing" || true
+    check_generic_meta_loop "$repo" "$agent_role" "$title" "$existing" >/dev/null || true
     echo "$existing"
     return 0
   fi
@@ -46,7 +46,7 @@ file_or_update_issue() {
   num=$(echo "$url" | grep -oE '/issues/[0-9]+' | grep -oE '[0-9]+' || echo "")
   # Check for generic meta-loop on creation
   if [[ -n "$num" ]]; then
-    check_generic_meta_loop "$repo" "$agent_role" "$title" "$num" || true
+    check_generic_meta_loop "$repo" "$agent_role" "$title" "$num" >/dev/null || true
   fi
   echo "$num"
 }
